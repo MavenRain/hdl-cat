@@ -39,6 +39,33 @@
 //! it into an `Arc` internally.  `Arc` is therefore present at
 //! this API boundary by necessity — it is a comp-cat-rs
 //! requirement, not a design choice.
+//!
+//! # Example — transform a `bool` signal and collect samples
+//!
+//! ```
+//! # fn main() -> Result<(), hdl_cat_error::Error> {
+//! use hdl_cat_signal::{Red, Signal};
+//!
+//! let s: Signal<Red, bool> = Signal::from_vec(vec![true, false, true, false]);
+//! let flipped = s.map(|v| !v);
+//! let collected: Vec<bool> = flipped.collect().run()?;
+//! assert_eq!(collected, vec![false, true, false, true]);
+//! # Ok(()) }
+//! ```
+//!
+//! # Example — `delay` inserts a register-style shift
+//!
+//! ```
+//! # fn main() -> Result<(), hdl_cat_error::Error> {
+//! use hdl_cat_signal::{Red, Signal};
+//!
+//! let s: Signal<Red, bool> = Signal::from_vec(vec![true, true, false]);
+//! // Prepend an initial value, shifting each sample by one cycle.
+//! let shifted = s.delay(false);
+//! let collected = shifted.collect().run()?;
+//! assert_eq!(collected, vec![false, true, true, false]);
+//! # Ok(()) }
+//! ```
 
 pub mod domain;
 pub mod signal;

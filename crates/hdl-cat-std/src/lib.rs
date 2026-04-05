@@ -1,12 +1,44 @@
-//! Standard combinational components built from `hdl-cat-circuit`
-//! primitives.
+//! Standard components built from `hdl-cat-circuit` primitives
+//! and `hdl-cat-sync` state machinery.
 //!
-//! This crate is intentionally small for the first cut: it
-//! provides single-bit half- and full-adders and a few other
-//! bus-manipulation utilities, all expressed as
-//! [`hdl_cat_circuit::CircuitArrow`]s.  Stateful components
-//! (counters, FIFOs, RAMs, FSMs) will be added once
-//! `hdl-cat-sync` exposes a sufficiently rich wire-plumbing API.
+//! # Component catalogue
+//!
+//! | Component | Shape | Summary |
+//! |---|---|---|
+//! | [`half_adder`] | `CircuitArrow<bool⊗bool, bool⊗bool>` | `(a, b) → (sum, carry)` |
+//! | [`full_adder`] | `CircuitArrow<(bool⊗bool)⊗bool, bool⊗bool>` | `(a, b, cin) → (sum, cout)` |
+//! | [`counter<N>`] | `Sync<Obj<Bits<N>>, CircuitUnit, Obj<Bits<N>>>` | `state + 1` each cycle |
+//! | [`down_counter<N>`] | `Sync<Obj<Bits<N>>, CircuitUnit, Obj<Bits<N>>>` | `state - 1` each cycle |
+//! | [`accumulator<N>`] | `Sync<Obj<Bits<N>>, Obj<Bits<N>>, Obj<Bits<N>>>` | `state + input` each cycle |
+//! | [`toggle_ff`] | `Sync<Obj<bool>, CircuitUnit, Obj<bool>>` | flips the state each cycle |
+//! | [`shift_register_left<N>`] | `Sync<Obj<Bits<N>>, Obj<bool>, Obj<Bits<N>>>` | shift left, new bit at bit 0 |
+//!
+//! # Examples
+//!
+//! ## Accumulating a stream of values
+//!
+//! ```
+//! # fn main() -> Result<(), hdl_cat_error::Error> {
+//! use hdl_cat_std::accumulator;
+//!
+//! let acc = accumulator::<8>()?;
+//! assert_eq!(acc.state_wire_count(), 1);
+//! assert_eq!(acc.input_wires().len(), 2);  // state + input
+//! # Ok(()) }
+//! ```
+//!
+//! ## Building a half-adder from primitive gates
+//!
+//! ```
+//! # fn main() -> Result<(), hdl_cat_error::Error> {
+//! use hdl_cat_std::half_adder;
+//!
+//! let ha = half_adder()?;
+//! assert_eq!(ha.inputs().len(), 2);   // a, b
+//! assert_eq!(ha.outputs().len(), 2);  // sum, carry
+//! assert_eq!(ha.graph().instructions().len(), 2);  // XOR + AND
+//! # Ok(()) }
+//! ```
 
 pub mod accumulator;
 pub mod adder;

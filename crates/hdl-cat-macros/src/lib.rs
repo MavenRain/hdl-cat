@@ -18,6 +18,14 @@
 //!
 //! # Example
 //!
+//! The macro cannot be doctested from within its own crate
+//! because expanded code references `hdl_cat_ir`, `hdl_cat_bits`,
+//! `hdl_cat_circuit`, and `hdl_cat_error`, which aren't in this
+//! crate's dependency graph.  Real doctests live in the umbrella
+//! `hdl-cat` crate's `tests/kernel_macro.rs`.
+//!
+//! Conceptually:
+//!
 //! ```ignore
 //! use hdl_cat_macros::kernel;
 //! use hdl_cat_bits::Bits;
@@ -29,8 +37,10 @@
 //! }
 //! ```
 //!
-//! After expansion, `xor_plus_a` is a nullary function returning
-//! `Result<CircuitArrow<…, Obj<Bits<8>>>, Error>`.
+//! After expansion, `xor_plus_a` becomes a nullary function
+//! returning
+//! `Result<CircuitArrow<CircuitTensor<Obj<Bits<8>>, Obj<Bits<8>>>, Obj<Bits<8>>>, Error>`
+//! that builds the IR for the given expression.
 
 use proc_macro::TokenStream;
 use proc_macro2::Span;
