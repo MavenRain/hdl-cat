@@ -7,11 +7,11 @@
 //! |---|---|---|
 //! | [`half_adder`] | `CircuitArrow<bool⊗bool, bool⊗bool>` | `(a, b) → (sum, carry)` |
 //! | [`full_adder`] | `CircuitArrow<(bool⊗bool)⊗bool, bool⊗bool>` | `(a, b, cin) → (sum, cout)` |
-//! | [`counter<N>`] | `Sync<Obj<Bits<N>>, CircuitUnit, Obj<Bits<N>>>` | `state + 1` each cycle |
-//! | [`down_counter<N>`] | `Sync<Obj<Bits<N>>, CircuitUnit, Obj<Bits<N>>>` | `state - 1` each cycle |
-//! | [`accumulator<N>`] | `Sync<Obj<Bits<N>>, Obj<Bits<N>>, Obj<Bits<N>>>` | `state + input` each cycle |
+//! | [`counter()`] | `Sync<Obj<Bits<N>>, CircuitUnit, Obj<Bits<N>>>` | `state + 1` each cycle |
+//! | [`down_counter()`] | `Sync<Obj<Bits<N>>, CircuitUnit, Obj<Bits<N>>>` | `state - 1` each cycle |
+//! | [`accumulator()`] | `Sync<Obj<Bits<N>>, Obj<Bits<N>>, Obj<Bits<N>>>` | `state + input` each cycle |
 //! | [`toggle_ff`] | `Sync<Obj<bool>, CircuitUnit, Obj<bool>>` | flips the state each cycle |
-//! | [`shift_register_left<N>`] | `Sync<Obj<Bits<N>>, Obj<bool>, Obj<Bits<N>>>` | shift left, new bit at bit 0 |
+//! | [`shift_register_left()`] | `Sync<Obj<Bits<N>>, Obj<bool>, Obj<Bits<N>>>` | shift left, new bit at bit 0 |
 //!
 //! # Examples
 //!

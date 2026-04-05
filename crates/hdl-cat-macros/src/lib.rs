@@ -2,7 +2,7 @@
 //!
 //! Lifts a Rust function with a restricted body into an IR
 //! builder returning a combinational
-//! [`hdl_cat_circuit::CircuitArrow`].
+//! `hdl_cat_circuit::CircuitArrow`.
 //!
 //! # Supported subset
 //!
