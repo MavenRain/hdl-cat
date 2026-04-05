@@ -1,0 +1,18 @@
+[package]
+name = "hdl-cat-bits"
+description = "Bit-precise unsigned and signed integer newtypes for hdl-cat"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+hdl-cat-error.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,23 @@
+[package]
+name = "hdl-cat-sim"
+description = "Stream-based simulator for hdl-cat Sync machines"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+comp-cat-rs.workspace = true
+hdl-cat-error.workspace = true
+hdl-cat-kind.workspace = true
+hdl-cat-ir.workspace = true
+hdl-cat-sync.workspace = true
+hdl-cat-bits.workspace = true
+
+[dev-dependencies]
+hdl-cat-circuit.workspace = true
+
+[lints]
+workspace = true

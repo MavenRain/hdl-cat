@@ -1,0 +1,17 @@
+[package]
+name = "hdl-cat-ir"
+description = "Hardware IR: typed wires, gate instructions, free-category embedding"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+comp-cat-rs.workspace = true
+hdl-cat-error.workspace = true
+hdl-cat-kind.workspace = true
+
+[lints]
+workspace = true

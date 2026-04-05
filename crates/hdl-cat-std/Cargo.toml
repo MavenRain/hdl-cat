@@ -1,0 +1,20 @@
+[package]
+name = "hdl-cat-std"
+description = "Standard component library for hdl-cat"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+hdl-cat-error.workspace = true
+hdl-cat-bits.workspace = true
+hdl-cat-ir.workspace = true
+hdl-cat-circuit.workspace = true
+hdl-cat-kind.workspace = true
+hdl-cat-sync.workspace = true
+
+[lints]
+workspace = true

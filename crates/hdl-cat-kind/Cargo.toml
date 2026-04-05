@@ -1,0 +1,16 @@
+[package]
+name = "hdl-cat-kind"
+description = "Hardware-describable-type trait (Hw) and type descriptors for hdl-cat"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+hdl-cat-error.workspace = true
+hdl-cat-bits.workspace = true
+
+[lints]
+workspace = true

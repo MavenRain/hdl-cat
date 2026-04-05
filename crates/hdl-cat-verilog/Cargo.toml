@@ -1,0 +1,22 @@
+[package]
+name = "hdl-cat-verilog"
+description = "Verilog AST + emitter for hdl-cat IR graphs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+comp-cat-rs.workspace = true
+hdl-cat-error.workspace = true
+hdl-cat-ir.workspace = true
+hdl-cat-kind.workspace = true
+
+[dev-dependencies]
+hdl-cat-bits.workspace = true
+hdl-cat-circuit.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,15 @@
+[package]
+name = "hdl-cat-error"
+description = "Shared Error enum for hdl-cat"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+comp-cat-rs.workspace = true
+
+[lints]
+workspace = true

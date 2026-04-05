@@ -1,0 +1,218 @@
+//! The Verilog AST emitted by this crate.
+
+use comp_cat_rs::effect::io::Io;
+use hdl_cat_error::Error;
+
+/// The direction of a module port.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PortDirection {
+    /// `input` port.
+    Input,
+    /// `output` port — a `wire` type, driven by a continuous
+    /// `assign` statement.
+    Output,
+    /// `output reg` port — a `reg` type, assigned inside an
+    /// `always_ff` block.  Used for state wires that are also
+    /// exposed on the module interface.
+    OutputReg,
+}
+
+/// A named, directed, sized port declaration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Port {
+    name: String,
+    direction: PortDirection,
+    width: u32,
+}
+
+impl Port {
+    /// Construct a new port.
+    #[must_use]
+    pub fn new(name: impl Into<String>, direction: PortDirection, width: u32) -> Self {
+        Self { name: name.into(), direction, width }
+    }
+
+    /// The port's name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The port's direction.
+    #[must_use]
+    pub fn direction(&self) -> PortDirection {
+        self.direction
+    }
+
+    /// The port's bit width.
+    #[must_use]
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+}
+
+/// A continuous-assignment expression.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Expr {
+    /// A wire reference.
+    Wire(String),
+    /// A literal integer in decimal form, with width.
+    Literal {
+        /// The literal's bit width.
+        width: u32,
+        /// The literal value as an unsigned integer.
+        value: u128,
+    },
+    /// `~x`: bitwise NOT.
+    Not(Box<Expr>),
+    /// Infix binary operator (`&`, `|`, `^`, `+`, `-`, `*`, `==`, `<`).
+    Binary {
+        /// Verilog operator token.
+        op: &'static str,
+        /// Left operand.
+        lhs: Box<Expr>,
+        /// Right operand.
+        rhs: Box<Expr>,
+    },
+    /// `sel ? hi : lo`: ternary.
+    Mux {
+        /// Selector expression.
+        selector: Box<Expr>,
+        /// False-arm (when selector is zero).
+        false_arm: Box<Expr>,
+        /// True-arm (when selector is non-zero).
+        true_arm: Box<Expr>,
+    },
+    /// `{high, low}`: concatenation.
+    Concat {
+        /// High-bits operand (appears first in Verilog concat).
+        high: Box<Expr>,
+        /// Low-bits operand.
+        low: Box<Expr>,
+    },
+    /// `x[hi-1:lo]`: slice.
+    Slice {
+        /// Source expression.
+        source: Box<Expr>,
+        /// Low bit (inclusive).
+        lo: u32,
+        /// High bit (exclusive).
+        hi: u32,
+    },
+}
+
+/// A statement in a Verilog module body.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Stmt {
+    /// A wire declaration: `wire [w-1:0] name;`.
+    WireDecl {
+        /// Wire name.
+        name: String,
+        /// Bit width.
+        width: u32,
+    },
+    /// A reg declaration: `reg [w-1:0] name;`.
+    RegDecl {
+        /// Reg name.
+        name: String,
+        /// Bit width.
+        width: u32,
+    },
+    /// A continuous assignment: `assign lhs = rhs;`.
+    Assign {
+        /// Left-hand wire name.
+        lhs: String,
+        /// Right-hand expression.
+        rhs: Expr,
+    },
+    /// An `always_ff @(posedge clk)` block driving a single register
+    /// from an expression.
+    AlwaysFf {
+        /// Clock name.
+        clock: String,
+        /// Reset name (or `None` for free-running).
+        reset: Option<String>,
+        /// Target register.
+        reg: String,
+        /// Reset value (used when `reset` is present).
+        reset_value: Expr,
+        /// Next-state expression.
+        next: Expr,
+    },
+}
+
+/// A complete Verilog module.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[must_use]
+pub struct Module {
+    name: String,
+    ports: Vec<Port>,
+    body: Vec<Stmt>,
+}
+
+impl Module {
+    /// Construct a new module.
+    pub fn new(name: impl Into<String>, ports: Vec<Port>, body: Vec<Stmt>) -> Self {
+        Self { name: name.into(), ports, body }
+    }
+
+    /// The module's declared name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The module's port list.
+    #[must_use]
+    pub fn ports(&self) -> &[Port] {
+        &self.ports
+    }
+
+    /// The module's body statements.
+    #[must_use]
+    pub fn body(&self) -> &[Stmt] {
+        &self.body
+    }
+
+    /// Render this module to Verilog text.
+    #[must_use]
+    pub fn render(&self) -> Io<Error, String> {
+        let owned = self.clone();
+        Io::suspend(move || Ok(crate::render::render_module(&owned)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Expr, Module, Port, PortDirection, Stmt};
+
+    #[test]
+    fn port_accessors() {
+        let p = Port::new("clk", PortDirection::Input, 1);
+        assert_eq!(p.name(), "clk");
+        assert_eq!(p.direction(), PortDirection::Input);
+        assert_eq!(p.width(), 1);
+    }
+
+    #[test]
+    fn expr_is_clone_and_debug() {
+        let e = Expr::Wire("a".into());
+        let _ = e.clone();
+        let _ = format!("{e:?}");
+    }
+
+    #[test]
+    fn module_holds_parts() {
+        let m = Module::new(
+            "m",
+            vec![Port::new("a", PortDirection::Input, 4)],
+            vec![Stmt::WireDecl {
+                name: "w".into(),
+                width: 4,
+            }],
+        );
+        assert_eq!(m.name(), "m");
+        assert_eq!(m.ports().len(), 1);
+        assert_eq!(m.body().len(), 1);
+    }
+}
