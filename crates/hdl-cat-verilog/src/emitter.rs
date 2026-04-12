@@ -204,6 +204,310 @@ pub fn emit_sync_graph(
     })
 }
 
+/// Describes a contiguous range of state wires that form a shift-register
+/// array.  The emitter collapses these into a single `RegArrayDecl` +
+/// `AlwaysArrayShift` instead of individual registers.
+///
+/// State wire indices `start .. start + depth` (within the state wire
+/// slice) are grouped.  Each element has the same bit `width`.  The
+/// corresponding next-state wires must satisfy the shift-register
+/// pattern: `next[0] = input_expr`, `next[i] = state[i-1]`.
+#[derive(Clone, Debug)]
+pub struct StateArraySpec {
+    /// Name for the Verilog array (e.g. `"delay"`).
+    name: String,
+    /// Index of the first state wire in the state wire slice.
+    start: usize,
+    /// Number of elements (array depth).
+    depth: usize,
+    /// Bit width of each element.
+    width: u32,
+    /// The wire whose next-state feeds `arr[0]` each cycle.
+    ///
+    /// This is the output wire index (in the next-state slice) for
+    /// element 0 of the array.  The emitter reads the corresponding
+    /// instruction's input to discover the driving expression.
+    input_next_wire: WireId,
+    /// Reset value for every element (as a [`BitSeq`]).
+    reset_bits: BitSeq,
+}
+
+impl StateArraySpec {
+    /// Construct a new array specification.
+    #[must_use]
+    pub fn new(
+        name: impl Into<String>,
+        start: usize,
+        depth: usize,
+        width: u32,
+        input_next_wire: WireId,
+        reset_bits: BitSeq,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            start,
+            depth,
+            width,
+            input_next_wire,
+            reset_bits,
+        }
+    }
+
+    /// The array name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Index of the first state wire in the state wire slice.
+    #[must_use]
+    pub fn start(&self) -> usize {
+        self.start
+    }
+
+    /// Number of elements.
+    #[must_use]
+    pub fn depth(&self) -> usize {
+        self.depth
+    }
+
+    /// Bit width of each element.
+    #[must_use]
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+}
+
+/// Produce a Verilog [`Module`] from a stateful IR graph, collapsing
+/// designated state wire ranges into register arrays.
+///
+/// Behaves like [`emit_sync_graph`] but accepts a list of
+/// [`StateArraySpec`]s.  State wires covered by an array spec are
+/// emitted as `RegArrayDecl` + `AlwaysArrayShift` instead of
+/// individual `RegDecl` / `AlwaysFf` pairs.
+///
+/// # Errors
+///
+/// Returns [`Error::WidthMismatch`] when `initial_state`'s bit
+/// length does not match the total width of the state wires.
+#[must_use]
+pub fn emit_sync_graph_with_arrays(
+    graph: &HdlGraph,
+    name: &str,
+    state_wire_count: usize,
+    input_wires: &[WireId],
+    output_wires: &[WireId],
+    initial_state: &BitSeq,
+    arrays: &[StateArraySpec],
+) -> Io<Error, Module> {
+    let name_owned = name.to_string();
+    let graph_owned = graph.clone();
+    let input_owned: Vec<WireId> = input_wires.to_vec();
+    let output_owned: Vec<WireId> = output_wires.to_vec();
+    let initial_owned = initial_state.clone();
+    let arrays_owned: Vec<StateArraySpec> = arrays.to_vec();
+    Io::suspend(move || {
+        build_sync_module_with_arrays(
+            &graph_owned,
+            &name_owned,
+            state_wire_count,
+            &input_owned,
+            &output_owned,
+            &initial_owned,
+            &arrays_owned,
+        )
+    })
+}
+
+#[allow(clippy::too_many_lines)]
+fn build_sync_module_with_arrays(
+    graph: &HdlGraph,
+    name: &str,
+    state_wire_count: usize,
+    input_wires: &[WireId],
+    output_wires: &[WireId],
+    initial_state: &BitSeq,
+    arrays: &[StateArraySpec],
+) -> Result<Module, Error> {
+    let (state_wires_in, data_inputs) = input_wires.split_at(state_wire_count);
+    let (next_state_wires, data_outputs) = output_wires.split_at(state_wire_count);
+
+    // Split initial_state into per-state-wire chunks.
+    let state_widths: Vec<usize> = state_wires_in
+        .iter()
+        .map(|w| graph_wire_width_usize(graph, *w))
+        .collect();
+    let expected_bits: usize = state_widths.iter().sum();
+    (initial_state.len() == expected_bits)
+        .then_some(())
+        .ok_or_else(|| Error::WidthMismatch {
+            expected: hdl_cat_error::Width::new(
+                u32::try_from(expected_bits).unwrap_or(u32::MAX),
+            ),
+            actual: hdl_cat_error::Width::new(
+                u32::try_from(initial_state.len()).unwrap_or(u32::MAX),
+            ),
+        })?;
+    let init_chunks = split_state_bits(initial_state, &state_widths);
+
+    // Build a set of state wire indices that belong to arrays.
+    let array_indices: Vec<usize> = arrays
+        .iter()
+        .flat_map(|a| a.start..a.start + a.depth)
+        .collect();
+
+    // Ports: clk, rst, data inputs, data outputs.
+    let data_input_ports = data_inputs.iter().map(|w| {
+        Port::new(
+            wire_name(*w),
+            PortDirection::Input,
+            graph_wire_width_u32(graph, *w),
+        )
+    });
+    let data_output_ports = data_outputs.iter().map(|w| {
+        let direction = if state_wires_in.contains(w) {
+            PortDirection::OutputReg
+        } else {
+            PortDirection::Output
+        };
+        Port::new(wire_name(*w), direction, graph_wire_width_u32(graph, *w))
+    });
+    let ports: Vec<Port> = core::iter::once(Port::new("clk", PortDirection::Input, 1))
+        .chain(core::iter::once(Port::new("rst", PortDirection::Input, 1)))
+        .chain(data_input_ports)
+        .chain(data_output_ports)
+        .collect();
+
+    let port_wire_ids: Vec<WireId> = data_inputs
+        .iter()
+        .copied()
+        .chain(data_outputs.iter().copied())
+        .collect();
+
+    // Individual state reg declarations (excluding array members).
+    let state_reg_decls: Vec<Stmt> = state_wires_in
+        .iter()
+        .enumerate()
+        .filter(|(i, w)| !array_indices.contains(i) && !data_outputs.contains(w))
+        .map(|(_, w)| Stmt::RegDecl {
+            name: wire_name(*w),
+            width: graph_wire_width_u32(graph, *w),
+        })
+        .collect();
+
+    // Array declarations.
+    let array_decls: Vec<Stmt> = arrays
+        .iter()
+        .map(|a| Stmt::RegArrayDecl {
+            name: a.name.clone(),
+            width: a.width,
+            depth: a.depth,
+        })
+        .collect();
+
+    // Internal wire declarations (excluding state and port wires).
+    // Also exclude next-state wires that belong to arrays (indices 1..depth)
+    // since those are handled by the shift logic.
+    let array_next_skip: Vec<WireId> = arrays
+        .iter()
+        .flat_map(|a| (1..a.depth).map(move |i| next_state_wires[a.start + i]))
+        .collect();
+    let internal_wire_decls: Vec<Stmt> = graph
+        .wires()
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, ty)| {
+            let w = WireId::new(idx);
+            let is_state = state_wires_in.contains(&w);
+            let is_port = port_wire_ids.contains(&w);
+            let is_array_next = array_next_skip.contains(&w);
+            if is_state || is_port || is_array_next {
+                None
+            } else {
+                Some(Stmt::WireDecl {
+                    name: wire_name(w),
+                    width: ty.width(),
+                })
+            }
+        })
+        .collect();
+
+    // Filter out assignments that write to array shift wires (next[1..depth]).
+    let assignments: Vec<Stmt> = graph
+        .instructions()
+        .iter()
+        .filter(|instr| !array_next_skip.contains(&instr.output()))
+        .map(instruction_to_stmt)
+        .collect();
+
+    // Individual always_ff blocks for non-array state wires.
+    let always_blocks: Vec<Stmt> = state_wires_in
+        .iter()
+        .enumerate()
+        .zip(next_state_wires.iter())
+        .zip(init_chunks.iter())
+        .filter(|(((i, _), _), _)| !array_indices.contains(i))
+        .map(|(((_i, state_w), next_w), init_bits)| {
+            let init_width = graph_wire_width_u32(graph, *state_w);
+            Stmt::AlwaysFf {
+                clock: "clk".to_string(),
+                reset: Some("rst".to_string()),
+                reg: wire_name(*state_w),
+                reset_value: Expr::Literal {
+                    width: init_width,
+                    value: bits_to_u128(init_bits),
+                },
+                next: Expr::Wire(wire_name(*next_w)),
+            }
+        })
+        .collect();
+
+    // Array shift blocks.
+    let array_shifts: Vec<Stmt> = arrays
+        .iter()
+        .map(|a| Stmt::AlwaysArrayShift {
+            clock: "clk".to_string(),
+            reset: "rst".to_string(),
+            array: a.name.clone(),
+            depth: a.depth,
+            width: a.width,
+            reset_value: Expr::Literal {
+                width: a.width,
+                value: bits_to_u128(&a.reset_bits),
+            },
+            input: Expr::Wire(wire_name(a.input_next_wire)),
+        })
+        .collect();
+
+    // Wire up array tail outputs: assign w{tail} = array[depth-1];
+    let array_tail_assigns: Vec<Stmt> = arrays
+        .iter()
+        .map(|a| {
+            let tail_state_idx = a.start + a.depth - 1;
+            let tail_wire = state_wires_in[tail_state_idx];
+            Stmt::Assign {
+                lhs: wire_name(tail_wire),
+                rhs: Expr::ArrayIndex {
+                    array: a.name.clone(),
+                    index: a.depth - 1,
+                },
+            }
+        })
+        .collect();
+
+    let body: Vec<Stmt> = state_reg_decls
+        .into_iter()
+        .chain(array_decls)
+        .chain(internal_wire_decls)
+        .chain(assignments)
+        .chain(array_tail_assigns)
+        .chain(always_blocks)
+        .chain(array_shifts)
+        .collect();
+
+    Ok(Module::new(name, ports, body))
+}
+
 fn build_sync_module(
     graph: &HdlGraph,
     name: &str,
@@ -472,6 +776,94 @@ mod tests {
         let init = BitSeq::from_vec(vec![true, false]);
         let result = emit_sync_graph(&graph, "bad", 1, &[state], &[next_state], &init).run();
         assert!(result.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn array_emitter_produces_reg_array_and_shift() -> Result<(), hdl_cat_error::Error> {
+        // Build a graph with 4 state wires (shift register) + 1 state wire (counter).
+        // State: [d0, d1, d2, d3, counter]
+        // Next:  [next_d0, next_d1, next_d2, next_d3, next_counter]
+        // Shift: next_d0 = data_in (via identity), next_d1 = d0, etc.
+        let (bld, d0) = HdlGraphBuilder::new().with_wire(WireTy::Bits(4));
+        let (bld, d1) = bld.with_wire(WireTy::Bits(4));
+        let (bld, d2) = bld.with_wire(WireTy::Bits(4));
+        let (bld, d3) = bld.with_wire(WireTy::Bits(4));
+        let (bld, ctr) = bld.with_wire(WireTy::Bits(4));
+        // Data input
+        let (bld, data_in) = bld.with_wire(WireTy::Bits(4));
+        // Next-state wires
+        let (bld, next_d0) = bld.with_wire(WireTy::Bits(4));
+        let (bld, next_d1) = bld.with_wire(WireTy::Bits(4));
+        let (bld, next_d2) = bld.with_wire(WireTy::Bits(4));
+        let (bld, next_d3) = bld.with_wire(WireTy::Bits(4));
+        let (bld, next_ctr) = bld.with_wire(WireTy::Bits(4));
+        // Data output: tail of shift register
+        let (bld, data_out) = bld.with_wire(WireTy::Bits(4));
+
+        // Instructions: next_d0 = data_in, next_d1 = d0, etc.
+        let bld = bld.with_instruction(
+            Op::Slice { lo: 0, hi: 4 }, vec![data_in], next_d0,
+        )?;
+        let bld = bld.with_instruction(
+            Op::Slice { lo: 0, hi: 4 }, vec![d0], next_d1,
+        )?;
+        let bld = bld.with_instruction(
+            Op::Slice { lo: 0, hi: 4 }, vec![d1], next_d2,
+        )?;
+        let bld = bld.with_instruction(
+            Op::Slice { lo: 0, hi: 4 }, vec![d2], next_d3,
+        )?;
+        // counter: next_ctr = ctr + 1 (simplified as NOT for the test)
+        let bld = bld.with_instruction(Op::Not, vec![ctr], next_ctr)?;
+        // data_out = d3
+        let bld = bld.with_instruction(
+            Op::Slice { lo: 0, hi: 4 }, vec![d3], data_out,
+        )?;
+        let graph = bld.build();
+
+        // State: [d0, d1, d2, d3, ctr] — 5 state wires
+        let input_wires = [d0, d1, d2, d3, ctr, data_in];
+        let output_wires = [next_d0, next_d1, next_d2, next_d3, next_ctr, data_out];
+        let init = BitSeq::from_vec(vec![false; 4 * 5]); // 5 x 4-bit = 20 bits
+
+        let array_spec = super::StateArraySpec::new(
+            "delay",
+            0,    // start
+            4,    // depth
+            4,    // width
+            next_d0,
+            BitSeq::from_vec(vec![false; 4]),
+        );
+
+        let module = super::emit_sync_graph_with_arrays(
+            &graph, "shift_test", 5,
+            &input_wires, &output_wires, &init,
+            &[array_spec],
+        ).run()?;
+
+        let text = module.render().run()?;
+
+        // Should have a reg array declaration
+        assert!(text.contains("reg [3:0] delay [0:3];"));
+        // Should have the array shift block
+        assert!(text.contains("delay[0] <="));
+        assert!(text.contains("delay[1] <= delay[0];"));
+        assert!(text.contains("delay[3] <= delay[2];"));
+        // Counter should still have its own AlwaysFf
+        let always_ff_count = module
+            .body()
+            .iter()
+            .filter(|s| matches!(s, Stmt::AlwaysFf { .. }))
+            .count();
+        assert_eq!(always_ff_count, 1); // only for counter
+        // Should have one AlwaysArrayShift
+        let array_shift_count = module
+            .body()
+            .iter()
+            .filter(|s| matches!(s, Stmt::AlwaysArrayShift { .. }))
+            .count();
+        assert_eq!(array_shift_count, 1);
         Ok(())
     }
 

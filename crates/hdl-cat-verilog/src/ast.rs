@@ -99,6 +99,13 @@ pub enum Expr {
         /// High bit (exclusive).
         hi: u32,
     },
+    /// `name[index]`: array element access (for register arrays).
+    ArrayIndex {
+        /// Array name.
+        array: String,
+        /// Element index (constant).
+        index: usize,
+    },
 }
 
 /// A statement in a Verilog module body.
@@ -138,6 +145,38 @@ pub enum Stmt {
         reset_value: Expr,
         /// Next-state expression.
         next: Expr,
+    },
+    /// A register array declaration: `reg [W-1:0] name [0:D-1];`.
+    ///
+    /// Used for BRAM-inferable delay lines and shift registers.
+    RegArrayDecl {
+        /// Array name.
+        name: String,
+        /// Element bit width.
+        width: u32,
+        /// Number of elements (depth).
+        depth: usize,
+    },
+    /// An `always_ff @(posedge clk)` block implementing an array
+    /// shift register with synchronous reset.
+    ///
+    /// On reset, every element is set to `reset_value`.  Otherwise,
+    /// `arr[0] <= input; arr[i] <= arr[i-1]` for `i` in `1..depth`.
+    AlwaysArrayShift {
+        /// Clock name.
+        clock: String,
+        /// Reset name.
+        reset: String,
+        /// Array name (must match a [`RegArrayDecl`](Stmt::RegArrayDecl)).
+        array: String,
+        /// Number of elements in the array.
+        depth: usize,
+        /// Element bit width (for reset literal).
+        width: u32,
+        /// Reset value for every element.
+        reset_value: Expr,
+        /// Expression driving `arr[0]` each cycle.
+        input: Expr,
     },
 }
 

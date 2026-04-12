@@ -65,6 +65,10 @@ fn render_stmt(s: &Stmt) -> String {
         Stmt::AlwaysFf { clock, reset, reg, reset_value, next } => render_always_ff(
             clock, reset.as_deref(), reg, reset_value, next,
         ),
+        Stmt::RegArrayDecl { name, width, depth } => render_reg_array_decl(name, *width, *depth),
+        Stmt::AlwaysArrayShift {
+            clock, reset, array, depth, width, reset_value, input,
+        } => render_always_array_shift(clock, reset, array, *depth, *width, reset_value, input),
     }
 }
 
@@ -88,6 +92,45 @@ fn render_always_ff(
     }
 }
 
+fn render_reg_array_decl(name: &str, width: u32, depth: usize) -> String {
+    let last = depth.saturating_sub(1);
+    if width <= 1 {
+        format!("reg {name} [0:{last}];")
+    } else {
+        format!("reg [{}:0] {name} [0:{last}];", width - 1)
+    }
+}
+
+fn render_always_array_shift(
+    clock: &str,
+    reset: &str,
+    array: &str,
+    depth: usize,
+    _width: u32,
+    reset_value: &Expr,
+    input: &Expr,
+) -> String {
+    let rst_val = render_expr(reset_value);
+    let in_val = render_expr(input);
+    let reset_assign = format!("{array}[__i__] <= {rst_val};");
+    let shift_lines = (1..depth)
+        .map(|i| format!("        {array}[{i}] <= {array}[{}];", i - 1));
+    let lines: Vec<String> = core::iter::once(
+            format!("always_ff @(posedge {clock}) begin"),
+        )
+        .chain(core::iter::once(format!("    if ({reset}) begin")))
+        .chain(core::iter::once(format!(
+            "        for (integer __i__ = 0; __i__ < {depth}; __i__ = __i__ + 1) {reset_assign}"
+        )))
+        .chain(core::iter::once("    end else begin".to_string()))
+        .chain(core::iter::once(format!("        {array}[0] <= {in_val};")))
+        .chain(shift_lines)
+        .chain(core::iter::once("    end".to_string()))
+        .chain(core::iter::once("end".to_string()))
+        .collect();
+    lines.join("\n    ")
+}
+
 fn render_expr(e: &Expr) -> String {
     match e {
         Expr::Wire(n) => n.clone(),
@@ -109,6 +152,7 @@ fn render_expr(e: &Expr) -> String {
             let h = hi.saturating_sub(1);
             format!("{}[{}:{}]", render_expr(source), h, lo)
         }
+        Expr::ArrayIndex { array, index } => format!("{array}[{index}]"),
     }
 }
 
@@ -185,5 +229,65 @@ mod tests {
         );
         let text = render_module(&m);
         assert!(text.contains("input clk"));
+    }
+
+    #[test]
+    fn renders_array_index_expr() {
+        let e = Expr::ArrayIndex { array: "delay".into(), index: 7 };
+        assert_eq!(render_expr(&e), "delay[7]");
+    }
+
+    #[test]
+    fn renders_reg_array_decl() {
+        let m = Module::new(
+            "t",
+            Vec::new(),
+            vec![Stmt::RegArrayDecl {
+                name: "delay".into(),
+                width: 64,
+                depth: 8,
+            }],
+        );
+        let text = render_module(&m);
+        assert!(text.contains("reg [63:0] delay [0:7];"));
+    }
+
+    #[test]
+    fn renders_reg_array_decl_single_bit() {
+        let m = Module::new(
+            "t",
+            Vec::new(),
+            vec![Stmt::RegArrayDecl {
+                name: "flags".into(),
+                width: 1,
+                depth: 4,
+            }],
+        );
+        let text = render_module(&m);
+        assert!(text.contains("reg flags [0:3];"));
+    }
+
+    #[test]
+    fn renders_always_array_shift() {
+        let m = Module::new(
+            "sr",
+            vec![Port::new("clk", PortDirection::Input, 1)],
+            vec![Stmt::AlwaysArrayShift {
+                clock: "clk".into(),
+                reset: "rst".into(),
+                array: "d".into(),
+                depth: 4,
+                width: 64,
+                reset_value: Expr::Literal { width: 64, value: 0 },
+                input: Expr::Wire("din".into()),
+            }],
+        );
+        let text = render_module(&m);
+        assert!(text.contains("always_ff @(posedge clk) begin"));
+        assert!(text.contains("if (rst) begin"));
+        assert!(text.contains("d[0] <= din;"));
+        assert!(text.contains("d[1] <= d[0];"));
+        assert!(text.contains("d[2] <= d[1];"));
+        assert!(text.contains("d[3] <= d[2];"));
     }
 }
