@@ -69,6 +69,13 @@ fn render_stmt(s: &Stmt) -> String {
         Stmt::AlwaysArrayShift {
             clock, reset, array, depth, width, reset_value, input,
         } => render_always_array_shift(clock, reset, array, *depth, *width, reset_value, input),
+        Stmt::AlwaysArrayCircBuf {
+            clock, reset, array, depth, width, ptr_name, ptr_width,
+            reset_value, input,
+        } => render_always_array_circ_buf(
+            clock, reset, array, *depth, *width, ptr_name, *ptr_width,
+            reset_value, input,
+        ),
     }
 }
 
@@ -131,6 +138,45 @@ fn render_always_array_shift(
     lines.join("\n    ")
 }
 
+#[allow(clippy::too_many_arguments)]
+fn render_always_array_circ_buf(
+    clock: &str,
+    reset: &str,
+    array: &str,
+    depth: usize,
+    _width: u32,
+    ptr_name: &str,
+    ptr_width: u32,
+    reset_value: &Expr,
+    input: &Expr,
+) -> String {
+    let rst_val = render_expr(reset_value);
+    let in_val = render_expr(input);
+    let reset_assign = format!("{array}[__i__] <= {rst_val};");
+    let last = depth.saturating_sub(1);
+    let lines: Vec<String> = core::iter::once(
+            format!("always_ff @(posedge {clock}) begin"),
+        )
+        .chain(core::iter::once(format!("    if ({reset}) begin")))
+        .chain(core::iter::once(format!(
+            "        for (integer __i__ = 0; __i__ < {depth}; __i__ = __i__ + 1) {reset_assign}"
+        )))
+        .chain(core::iter::once(format!(
+            "        {ptr_name} <= {ptr_width}'d0;"
+        )))
+        .chain(core::iter::once("    end else begin".to_string()))
+        .chain(core::iter::once(format!(
+            "        {array}[{ptr_name}] <= {in_val};"
+        )))
+        .chain(core::iter::once(format!(
+            "        {ptr_name} <= ({ptr_name} == {ptr_width}'d{last}) ? {ptr_width}'d0 : {ptr_name} + {ptr_width}'d1;"
+        )))
+        .chain(core::iter::once("    end".to_string()))
+        .chain(core::iter::once("end".to_string()))
+        .collect();
+    lines.join("\n    ")
+}
+
 fn render_expr(e: &Expr) -> String {
     match e {
         Expr::Wire(n) => n.clone(),
@@ -153,6 +199,7 @@ fn render_expr(e: &Expr) -> String {
             format!("{}[{}:{}]", render_expr(source), h, lo)
         }
         Expr::ArrayIndex { array, index } => format!("{array}[{index}]"),
+        Expr::ArrayDynIndex { array, index } => format!("{array}[{}]", render_expr(index)),
     }
 }
 
@@ -289,5 +336,39 @@ mod tests {
         assert!(text.contains("d[1] <= d[0];"));
         assert!(text.contains("d[2] <= d[1];"));
         assert!(text.contains("d[3] <= d[2];"));
+    }
+
+    #[test]
+    fn renders_always_array_circ_buf() {
+        let m = Module::new(
+            "cb",
+            vec![Port::new("clk", PortDirection::Input, 1)],
+            vec![Stmt::AlwaysArrayCircBuf {
+                clock: "clk".into(),
+                reset: "rst".into(),
+                array: "buf".into(),
+                depth: 8,
+                width: 64,
+                ptr_name: "buf_ptr".into(),
+                ptr_width: 3,
+                reset_value: Expr::Literal { width: 64, value: 0 },
+                input: Expr::Wire("din".into()),
+            }],
+        );
+        let text = render_module(&m);
+        assert!(text.contains("always_ff @(posedge clk) begin"));
+        assert!(text.contains("if (rst) begin"));
+        assert!(text.contains("buf_ptr <= 3'd0;"));
+        assert!(text.contains("buf[buf_ptr] <= din;"));
+        assert!(text.contains("buf_ptr <= (buf_ptr == 3'd7) ? 3'd0 : buf_ptr + 3'd1;"));
+    }
+
+    #[test]
+    fn renders_array_dyn_index_expr() {
+        let e = Expr::ArrayDynIndex {
+            array: "buf".into(),
+            index: Box::new(Expr::Wire("ptr".into())),
+        };
+        assert_eq!(render_expr(&e), "buf[ptr]");
     }
 }

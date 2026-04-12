@@ -204,9 +204,28 @@ pub fn emit_sync_graph(
     })
 }
 
+/// Strategy for how an array of state wires is emitted to Verilog.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArrayStrategy {
+    /// Shift register: `arr[0] <= input; arr[i] <= arr[i-1]`.
+    ///
+    /// Generates `depth` assignment lines.  Suitable for small
+    /// arrays (up to ~32 elements) that map to SRL primitives or
+    /// flip-flop chains.
+    ShiftRegister,
+    /// Circular buffer: `arr[wr_ptr] <= input; wr_ptr <= (wr_ptr + 1) % depth`.
+    ///
+    /// The oldest element is read combinationally via `arr[wr_ptr]`
+    /// (read-before-write semantics).  Generates O(1) assignment
+    /// lines regardless of depth, making it suitable for large
+    /// BRAM-backed delay lines.
+    CircularBuffer,
+}
+
 /// Describes a contiguous range of state wires that form a shift-register
-/// array.  The emitter collapses these into a single `RegArrayDecl` +
-/// `AlwaysArrayShift` instead of individual registers.
+/// or circular-buffer array.  The emitter collapses these into a single
+/// `RegArrayDecl` + shift/circular-buffer block instead of individual
+/// registers.
 ///
 /// State wire indices `start .. start + depth` (within the state wire
 /// slice) are grouped.  Each element has the same bit `width`.  The
@@ -230,10 +249,16 @@ pub struct StateArraySpec {
     input_next_wire: WireId,
     /// Reset value for every element (as a [`BitSeq`]).
     reset_bits: BitSeq,
+    /// How the array is emitted to Verilog.
+    strategy: ArrayStrategy,
 }
 
 impl StateArraySpec {
     /// Construct a new array specification.
+    ///
+    /// Defaults to [`ArrayStrategy::ShiftRegister`].  Use
+    /// [`with_strategy`](Self::with_strategy) to select a
+    /// circular-buffer strategy for large arrays.
     #[must_use]
     pub fn new(
         name: impl Into<String>,
@@ -250,7 +275,14 @@ impl StateArraySpec {
             width,
             input_next_wire,
             reset_bits,
+            strategy: ArrayStrategy::ShiftRegister,
         }
+    }
+
+    /// Return a copy with a different [`ArrayStrategy`].
+    #[must_use]
+    pub fn with_strategy(self, strategy: ArrayStrategy) -> Self {
+        Self { strategy, ..self }
     }
 
     /// The array name.
@@ -275,6 +307,12 @@ impl StateArraySpec {
     #[must_use]
     pub fn width(&self) -> u32 {
         self.width
+    }
+
+    /// The emission strategy.
+    #[must_use]
+    pub fn strategy(&self) -> ArrayStrategy {
+        self.strategy
     }
 }
 
@@ -462,41 +500,77 @@ fn build_sync_module_with_arrays(
         })
         .collect();
 
-    // Array shift blocks.
+    // Array shift / circular-buffer blocks.
     let array_shifts: Vec<Stmt> = arrays
         .iter()
-        .map(|a| Stmt::AlwaysArrayShift {
-            clock: "clk".to_string(),
-            reset: "rst".to_string(),
-            array: a.name.clone(),
-            depth: a.depth,
-            width: a.width,
-            reset_value: Expr::Literal {
+        .map(|a| match a.strategy {
+            ArrayStrategy::ShiftRegister => Stmt::AlwaysArrayShift {
+                clock: "clk".to_string(),
+                reset: "rst".to_string(),
+                array: a.name.clone(),
+                depth: a.depth,
                 width: a.width,
-                value: bits_to_u128(&a.reset_bits),
+                reset_value: Expr::Literal {
+                    width: a.width,
+                    value: bits_to_u128(&a.reset_bits),
+                },
+                input: Expr::Wire(wire_name(a.input_next_wire)),
             },
-            input: Expr::Wire(wire_name(a.input_next_wire)),
+            ArrayStrategy::CircularBuffer => Stmt::AlwaysArrayCircBuf {
+                clock: "clk".to_string(),
+                reset: "rst".to_string(),
+                array: a.name.clone(),
+                depth: a.depth,
+                width: a.width,
+                ptr_name: format!("{}_ptr", a.name),
+                ptr_width: ptr_width(a.depth),
+                reset_value: Expr::Literal {
+                    width: a.width,
+                    value: bits_to_u128(&a.reset_bits),
+                },
+                input: Expr::Wire(wire_name(a.input_next_wire)),
+            },
         })
         .collect();
 
-    // Wire up array tail outputs: assign w{tail} = array[depth-1];
+    // Pointer register declarations for circular-buffer arrays.
+    let circ_buf_ptr_decls: Vec<Stmt> = arrays
+        .iter()
+        .filter(|a| a.strategy == ArrayStrategy::CircularBuffer)
+        .map(|a| Stmt::RegDecl {
+            name: format!("{}_ptr", a.name),
+            width: ptr_width(a.depth),
+        })
+        .collect();
+
+    // Wire up array tail outputs.
+    // Shift register: `assign w{tail} = array[depth-1];`
+    // Circular buffer: `assign w{tail} = array[ptr];` (read-before-write)
     let array_tail_assigns: Vec<Stmt> = arrays
         .iter()
         .map(|a| {
             let tail_state_idx = a.start + a.depth - 1;
             let tail_wire = state_wires_in[tail_state_idx];
-            Stmt::Assign {
-                lhs: wire_name(tail_wire),
-                rhs: Expr::ArrayIndex {
+            let rhs = match a.strategy {
+                ArrayStrategy::ShiftRegister => Expr::ArrayIndex {
                     array: a.name.clone(),
                     index: a.depth - 1,
                 },
+                ArrayStrategy::CircularBuffer => Expr::ArrayDynIndex {
+                    array: a.name.clone(),
+                    index: Box::new(Expr::Wire(format!("{}_ptr", a.name))),
+                },
+            };
+            Stmt::Assign {
+                lhs: wire_name(tail_wire),
+                rhs,
             }
         })
         .collect();
 
     let body: Vec<Stmt> = state_reg_decls
         .into_iter()
+        .chain(circ_buf_ptr_decls)
         .chain(array_decls)
         .chain(internal_wire_decls)
         .chain(assignments)
@@ -648,6 +722,14 @@ fn split_state_bits(bits: &BitSeq, widths: &[usize]) -> Vec<BitSeq> {
         },
     );
     chunks
+}
+
+/// Minimum number of bits to represent values `0 ..= depth - 1`.
+fn ptr_width(depth: usize) -> u32 {
+    match depth {
+        0 | 1 => 1,
+        d => usize::BITS - (d - 1).leading_zeros(),
+    }
 }
 
 fn graph_wire_width_usize(graph: &HdlGraph, w: WireId) -> usize {
@@ -864,6 +946,89 @@ mod tests {
             .filter(|s| matches!(s, Stmt::AlwaysArrayShift { .. }))
             .count();
         assert_eq!(array_shift_count, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn array_emitter_circ_buf_produces_ptr_and_dyn_index() -> Result<(), hdl_cat_error::Error> {
+        // Same graph as shift-register test, but with CircularBuffer strategy.
+        let (bld, d0) = HdlGraphBuilder::new().with_wire(WireTy::Bits(4));
+        let (bld, d1) = bld.with_wire(WireTy::Bits(4));
+        let (bld, d2) = bld.with_wire(WireTy::Bits(4));
+        let (bld, d3) = bld.with_wire(WireTy::Bits(4));
+        let (bld, ctr) = bld.with_wire(WireTy::Bits(4));
+        let (bld, data_in) = bld.with_wire(WireTy::Bits(4));
+        let (bld, next_d0) = bld.with_wire(WireTy::Bits(4));
+        let (bld, next_d1) = bld.with_wire(WireTy::Bits(4));
+        let (bld, next_d2) = bld.with_wire(WireTy::Bits(4));
+        let (bld, next_d3) = bld.with_wire(WireTy::Bits(4));
+        let (bld, next_ctr) = bld.with_wire(WireTy::Bits(4));
+        let (bld, data_out) = bld.with_wire(WireTy::Bits(4));
+
+        let bld = bld.with_instruction(
+            Op::Slice { lo: 0, hi: 4 }, vec![data_in], next_d0,
+        )?;
+        let bld = bld.with_instruction(
+            Op::Slice { lo: 0, hi: 4 }, vec![d0], next_d1,
+        )?;
+        let bld = bld.with_instruction(
+            Op::Slice { lo: 0, hi: 4 }, vec![d1], next_d2,
+        )?;
+        let bld = bld.with_instruction(
+            Op::Slice { lo: 0, hi: 4 }, vec![d2], next_d3,
+        )?;
+        let bld = bld.with_instruction(Op::Not, vec![ctr], next_ctr)?;
+        let bld = bld.with_instruction(
+            Op::Slice { lo: 0, hi: 4 }, vec![d3], data_out,
+        )?;
+        let graph = bld.build();
+
+        let input_wires = [d0, d1, d2, d3, ctr, data_in];
+        let output_wires = [next_d0, next_d1, next_d2, next_d3, next_ctr, data_out];
+        let init = BitSeq::from_vec(vec![false; 4 * 5]);
+
+        let array_spec = super::StateArraySpec::new(
+            "delay",
+            0,
+            4,
+            4,
+            next_d0,
+            BitSeq::from_vec(vec![false; 4]),
+        ).with_strategy(super::ArrayStrategy::CircularBuffer);
+
+        let module = super::emit_sync_graph_with_arrays(
+            &graph, "circ_test", 5,
+            &input_wires, &output_wires, &init,
+            &[array_spec],
+        ).run()?;
+
+        let text = module.render().run()?;
+
+        // Should have a reg array declaration
+        assert!(text.contains("reg [3:0] delay [0:3];"));
+        // Should have pointer register declaration
+        assert!(text.contains("reg [1:0] delay_ptr;"));
+        // Should have circular buffer block, not shift block
+        assert!(text.contains("delay[delay_ptr] <="));
+        assert!(text.contains("delay_ptr <= (delay_ptr == 2'd3) ? 2'd0 : delay_ptr + 2'd1;"));
+        // Tail assign uses dynamic index
+        assert!(text.contains("assign w3 = delay[delay_ptr];"));
+        // Should NOT have shift-register lines
+        assert!(!text.contains("delay[1] <= delay[0];"));
+        // Counter still has its own AlwaysFf
+        let always_ff_count = module
+            .body()
+            .iter()
+            .filter(|s| matches!(s, Stmt::AlwaysFf { .. }))
+            .count();
+        assert_eq!(always_ff_count, 1);
+        // Should have one AlwaysArrayCircBuf
+        let circ_buf_count = module
+            .body()
+            .iter()
+            .filter(|s| matches!(s, Stmt::AlwaysArrayCircBuf { .. }))
+            .count();
+        assert_eq!(circ_buf_count, 1);
         Ok(())
     }
 

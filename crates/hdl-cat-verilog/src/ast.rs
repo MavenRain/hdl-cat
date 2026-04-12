@@ -106,6 +106,16 @@ pub enum Expr {
         /// Element index (constant).
         index: usize,
     },
+    /// `name[expr]`: array element access with a dynamic index.
+    ///
+    /// Used by circular-buffer delay lines where the read address
+    /// is a register (the write pointer).
+    ArrayDynIndex {
+        /// Array name.
+        array: String,
+        /// Index expression (typically a wire or register reference).
+        index: Box<Expr>,
+    },
 }
 
 /// A statement in a Verilog module body.
@@ -176,6 +186,37 @@ pub enum Stmt {
         /// Reset value for every element.
         reset_value: Expr,
         /// Expression driving `arr[0]` each cycle.
+        input: Expr,
+    },
+    /// An `always_ff @(posedge clk)` block implementing a circular-buffer
+    /// delay line with synchronous reset.
+    ///
+    /// On reset, every element is set to `reset_value` and the write
+    /// pointer is zeroed.  Otherwise, each cycle reads the oldest
+    /// element at `arr[wr_ptr]`, writes `input` to `arr[wr_ptr]`,
+    /// and advances `wr_ptr` modulo `depth`.
+    ///
+    /// Unlike [`AlwaysArrayShift`](Stmt::AlwaysArrayShift), this
+    /// emits O(1) assignment lines regardless of depth, making it
+    /// suitable for large BRAM-backed delay lines (2^20+ elements).
+    AlwaysArrayCircBuf {
+        /// Clock name.
+        clock: String,
+        /// Reset name.
+        reset: String,
+        /// Array name (must match a [`RegArrayDecl`](Stmt::RegArrayDecl)).
+        array: String,
+        /// Number of elements in the array.
+        depth: usize,
+        /// Element bit width (for reset literal).
+        width: u32,
+        /// Name of the write-pointer register.
+        ptr_name: String,
+        /// Bit width of the write pointer (`ceil(log2(depth))`).
+        ptr_width: u32,
+        /// Reset value for every element.
+        reset_value: Expr,
+        /// Expression driving the write each cycle.
         input: Expr,
     },
 }

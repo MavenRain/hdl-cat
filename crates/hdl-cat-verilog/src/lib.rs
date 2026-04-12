@@ -75,4 +75,6 @@ pub mod emitter;
 pub mod render;
 
 pub use ast::{Expr, Module, Port, PortDirection, Stmt};
-pub use emitter::{emit_graph, emit_sync_graph, emit_sync_graph_with_arrays, StateArraySpec};
+pub use emitter::{
+    ArrayStrategy, emit_graph, emit_sync_graph, emit_sync_graph_with_arrays, StateArraySpec,
+};
