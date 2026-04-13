@@ -88,6 +88,29 @@ pub enum Op {
         /// High bit index (exclusive).
         hi: u32,
     },
+    /// Shift a new element into an array.
+    ///
+    /// Inputs: `[array, new_element]`.  Semantics: insert
+    /// `new_element` at position 0, shift every existing element
+    /// up by one index, and discard the element at `depth - 1`.
+    /// Output: the updated array.
+    ArrayShiftIn {
+        /// Bit width of each element.
+        element_width: u32,
+        /// Number of elements.
+        depth: usize,
+    },
+    /// Read the tail (oldest) element of an array.
+    ///
+    /// Input: `[array]`.  Output: the element at position
+    /// `depth - 1` (the one that would be discarded by the
+    /// next [`ArrayShiftIn`](Self::ArrayShiftIn)).
+    ArrayTail {
+        /// Bit width of each element.
+        element_width: u32,
+        /// Number of elements.
+        depth: usize,
+    },
 }
 
 impl Op {
@@ -95,8 +118,8 @@ impl Op {
     #[must_use]
     pub fn arity(&self) -> usize {
         match self {
-            Self::Not | Self::Reg { .. } | Self::Slice { .. } => 1,
-            Self::Bin(_) | Self::Concat { .. } => 2,
+            Self::Not | Self::Reg { .. } | Self::Slice { .. } | Self::ArrayTail { .. } => 1,
+            Self::Bin(_) | Self::Concat { .. } | Self::ArrayShiftIn { .. } => 2,
             Self::Mux => 3,
             Self::Const { .. } => 0,
         }
@@ -115,6 +138,12 @@ impl core::fmt::Display for Op {
                 write!(f, "concat<{low_width},{high_width}>")
             }
             Self::Slice { lo, hi } => write!(f, "slice[{lo}..{hi}]"),
+            Self::ArrayShiftIn { element_width, depth } => {
+                write!(f, "array_shift_in<{element_width}x{depth}>")
+            }
+            Self::ArrayTail { element_width, depth } => {
+                write!(f, "array_tail<{element_width}x{depth}>")
+            }
         }
     }
 }
@@ -159,6 +188,14 @@ mod tests {
             2
         );
         assert_eq!(Op::Slice { lo: 0, hi: 4 }.arity(), 1);
+        assert_eq!(
+            Op::ArrayShiftIn { element_width: 64, depth: 4 }.arity(),
+            2,
+        );
+        assert_eq!(
+            Op::ArrayTail { element_width: 64, depth: 4 }.arity(),
+            1,
+        );
     }
 
     #[test]
@@ -166,5 +203,13 @@ mod tests {
         assert_eq!(Op::Not.to_string(), "not");
         assert_eq!(Op::Bin(BinOp::Xor).to_string(), "xor");
         assert_eq!(Op::Slice { lo: 0, hi: 8 }.to_string(), "slice[0..8]");
+        assert_eq!(
+            Op::ArrayShiftIn { element_width: 64, depth: 8 }.to_string(),
+            "array_shift_in<64x8>",
+        );
+        assert_eq!(
+            Op::ArrayTail { element_width: 32, depth: 4 }.to_string(),
+            "array_tail<32x4>",
+        );
     }
 }

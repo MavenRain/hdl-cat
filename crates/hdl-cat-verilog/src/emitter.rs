@@ -129,6 +129,17 @@ fn op_to_expr(op: &Op, inputs: &[WireId]) -> Expr {
             lo: *lo,
             hi: *hi,
         },
+        Op::ArrayShiftIn { .. } | Op::ArrayTail { .. } => {
+            // Array ops are handled at the module level by the
+            // sync emitter (RegArrayDecl + AlwaysArrayShift /
+            // AlwaysArrayCircBuf).  They should not appear as
+            // continuous assign statements.
+            inputs
+                .first()
+                .map_or(Expr::Literal { width: 0, value: 0 }, |w| {
+                    Expr::Wire(wire_name(*w))
+                })
+        }
     }
 }
 

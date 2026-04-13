@@ -48,72 +48,111 @@ fn run_cycles<S, I, O>(
 ) -> Result<Vec<TimedSample<BitSeq>>, Error> {
     let state_count = machine.state_wire_count();
 
-    // Widths of state-side and input-side input wires.
-    let widths = all_wire_widths(machine.graph(), machine.input_wires());
-    let (state_widths, input_widths) = widths.split_at(state_count);
+    // Split wire lists into state vs data portions.
+    let (state_in_wires, _data_in_wires) =
+        machine.input_wires().split_at(state_count);
 
-    // Widths of next-state-side and output-side output wires.
-    let out_widths = all_wire_widths(machine.graph(), machine.output_wires());
-    let (_next_state_widths, _output_widths) = out_widths.split_at(state_count);
+    // Compact (element-width) widths for initial state validation.
+    let compact_widths =
+        all_wire_widths(machine.graph(), machine.input_wires());
+    let (compact_state_widths, input_widths) =
+        compact_widths.split_at(state_count);
 
+    // Storage widths for state wires (element_width * depth for
+    // arrays, same as width for scalars).  Used for cycle-to-cycle
+    // state threading.
+    let storage_state_widths =
+        all_wire_storage_widths(machine.graph(), state_in_wires);
+
+    // Validate the compact initial state.
     let initial_state = machine.initial_state().clone();
-    let total_state_bits: usize = state_widths.iter().sum();
-    (initial_state.len() == total_state_bits)
+    let total_compact_bits: usize = compact_state_widths.iter().sum();
+    (initial_state.len() == total_compact_bits)
         .then_some(())
         .ok_or_else(|| Error::WidthMismatch {
             expected: hdl_cat_error::Width::new(
-                u32::try_from(total_state_bits).unwrap_or(u32::MAX),
+                u32::try_from(total_compact_bits).unwrap_or(u32::MAX),
             ),
             actual: hdl_cat_error::Width::new(
                 u32::try_from(initial_state.len()).unwrap_or(u32::MAX),
             ),
         })?;
 
-    let (samples, _final_state) = per_cycle_inputs.into_iter().enumerate().try_fold(
-        (Vec::<TimedSample<BitSeq>>::new(), initial_state),
-        |(acc, state_bits), (cycle_idx, cycle_input_bits)| {
-            // Split the state bits into per-wire chunks.
-            let state_values = split_by_widths(&state_bits, state_widths)?;
-            // Split the cycle's input bits into per-wire chunks.
-            let input_values = split_by_widths(&cycle_input_bits, input_widths)?;
-            // Concatenate: state wires first, input wires second.
-            let all_inputs: Vec<BitSeq> =
-                state_values.into_iter().chain(input_values).collect();
+    // Expand compact initial state to full storage.
+    let compact_values =
+        split_by_widths(&initial_state, compact_state_widths)?;
+    let full_state_bits = expand_state_for_interpreter(
+        machine.graph(),
+        state_in_wires,
+        compact_values,
+    )
+    .into_iter()
+    .fold(BitSeq::new(), BitSeq::concat);
 
-            // Interpret the graph.
-            let env = interpret(machine.graph(), machine.input_wires(), &all_inputs)?;
+    let (samples, _final_state) = per_cycle_inputs
+        .into_iter()
+        .enumerate()
+        .try_fold(
+            (Vec::<TimedSample<BitSeq>>::new(), full_state_bits),
+            |(acc, state_bits), (cycle_idx, cycle_input_bits)| {
+                // Split state by storage widths (full storage
+                // for arrays).
+                let state_values = split_by_widths(
+                    &state_bits,
+                    &storage_state_widths,
+                )?;
+                // Split the cycle's input bits by element widths.
+                let input_values =
+                    split_by_widths(&cycle_input_bits, input_widths)?;
+                // Concatenate: state wires first, input wires
+                // second.
+                let all_inputs: Vec<BitSeq> = state_values
+                    .into_iter()
+                    .chain(input_values)
+                    .collect();
 
-            // Read outputs.
-            let output_values: Vec<BitSeq> = machine
-                .output_wires()
-                .iter()
-                .map(|w| read_env(&env, *w))
-                .collect::<Result<Vec<_>, Error>>()?;
+                // Interpret the graph.
+                let env = interpret(
+                    machine.graph(),
+                    machine.input_wires(),
+                    &all_inputs,
+                )?;
 
-            let (next_state_values, data_out_values) = output_values.split_at(state_count);
+                // Read outputs.
+                let output_values: Vec<BitSeq> = machine
+                    .output_wires()
+                    .iter()
+                    .map(|w| read_env(&env, *w))
+                    .collect::<Result<Vec<_>, Error>>()?;
 
-            // Pack next_state into a flat BitSeq.
-            let next_state_bits = next_state_values
-                .iter()
-                .cloned()
-                .fold(BitSeq::new(), BitSeq::concat);
+                let (next_state_values, data_out_values) =
+                    output_values.split_at(state_count);
 
-            // Pack data outputs into a flat BitSeq.
-            let sample_bits = data_out_values
-                .iter()
-                .cloned()
-                .fold(BitSeq::new(), BitSeq::concat);
+                // Pack next_state into a flat BitSeq (full
+                // storage preserved between cycles).
+                let next_state_bits = next_state_values
+                    .iter()
+                    .cloned()
+                    .fold(BitSeq::new(), BitSeq::concat);
 
-            let new_acc = acc
-                .into_iter()
-                .chain(core::iter::once(TimedSample::new(
-                    Cycle::new(cycle_idx_as_u64(cycle_idx)),
-                    sample_bits,
-                )))
-                .collect();
-            Ok::<(Vec<TimedSample<BitSeq>>, BitSeq), Error>((new_acc, next_state_bits))
-        },
-    )?;
+                // Pack data outputs into a flat BitSeq.
+                let sample_bits = data_out_values
+                    .iter()
+                    .cloned()
+                    .fold(BitSeq::new(), BitSeq::concat);
+
+                let new_acc = acc
+                    .into_iter()
+                    .chain(core::iter::once(TimedSample::new(
+                        Cycle::new(cycle_idx_as_u64(cycle_idx)),
+                        sample_bits,
+                    )))
+                    .collect();
+                Ok::<(Vec<TimedSample<BitSeq>>, BitSeq), Error>(
+                    (new_acc, next_state_bits),
+                )
+            },
+        )?;
     Ok(samples)
 }
 
@@ -128,8 +167,38 @@ fn all_wire_widths(graph: &HdlGraph, wires: &[WireId]) -> Vec<usize> {
         .collect()
 }
 
+fn all_wire_storage_widths(graph: &HdlGraph, wires: &[WireId]) -> Vec<usize> {
+    wires
+        .iter()
+        .map(|w| graph.wire_ty(w.index()).map_or(0, WireTy::storage_bits))
+        .collect()
+}
+
 fn wire_width_usize(ty: &WireTy) -> usize {
     usize::try_from(ty.width()).unwrap_or(0)
+}
+
+/// Expand a compact (per-element) state into full storage for the
+/// interpreter.  Scalar wires pass through unchanged.  Array wires
+/// replicate their element-width reset value `depth` times.
+fn expand_state_for_interpreter(
+    graph: &HdlGraph,
+    state_wires: &[WireId],
+    compact_values: Vec<BitSeq>,
+) -> Vec<BitSeq> {
+    state_wires
+        .iter()
+        .zip(compact_values)
+        .map(|(w, val)| {
+            graph
+                .wire_ty(w.index())
+                .and_then(WireTy::depth)
+                .map_or_else(
+                    || val.clone(),
+                    |d| (0..d).fold(BitSeq::new(), |acc, _| acc.concat(val.clone())),
+                )
+        })
+        .collect()
 }
 
 fn read_env(env: &[Option<BitSeq>], w: WireId) -> Result<BitSeq, Error> {

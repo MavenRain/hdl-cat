@@ -153,7 +153,72 @@ pub fn apply_op(op: &Op, inputs: &[BitSeq]) -> Result<BitSeq, Error> {
                     ),
                 })
         }
+        Op::ArrayShiftIn { element_width, depth } => {
+            apply_array_shift_in(inputs, *element_width, *depth)
+        }
+        Op::ArrayTail { element_width, depth } => {
+            apply_array_tail(inputs, *element_width, *depth)
+        }
     }
+}
+
+fn apply_array_shift_in(
+    inputs: &[BitSeq],
+    element_width: u32,
+    depth: usize,
+) -> Result<BitSeq, Error> {
+    let ew = usize::try_from(element_width).unwrap_or(0);
+    let total = ew * depth;
+    let (array, new_elem) = inputs
+        .first()
+        .zip(inputs.get(1))
+        .filter(|(a, e)| a.len() == total && e.len() == ew)
+        .ok_or_else(|| Error::WidthMismatch {
+            expected: hdl_cat_error::Width::new(
+                u32::try_from(total).unwrap_or(u32::MAX),
+            ),
+            actual: hdl_cat_error::Width::new(
+                u32::try_from(inputs.len()).unwrap_or(u32::MAX),
+            ),
+        })?;
+    // Discard the tail (highest element) and prepend the
+    // new element at the low end.
+    let kept = (depth - 1) * ew;
+    let old_kept: BitSeq = array
+        .as_slice()
+        .iter()
+        .take(kept)
+        .copied()
+        .collect();
+    Ok(new_elem.clone().concat(old_kept))
+}
+
+fn apply_array_tail(
+    inputs: &[BitSeq],
+    element_width: u32,
+    depth: usize,
+) -> Result<BitSeq, Error> {
+    let ew = usize::try_from(element_width).unwrap_or(0);
+    let total = ew * depth;
+    let array = inputs
+        .first()
+        .filter(|a| a.len() == total)
+        .ok_or_else(|| Error::WidthMismatch {
+            expected: hdl_cat_error::Width::new(
+                u32::try_from(total).unwrap_or(u32::MAX),
+            ),
+            actual: hdl_cat_error::Width::new(
+                u32::try_from(inputs.first().map_or(0, BitSeq::len)).unwrap_or(u32::MAX),
+            ),
+        })?;
+    let tail_start = (depth - 1) * ew;
+    Ok(array
+        .as_slice()
+        .iter()
+        .skip(tail_start)
+        .take(ew)
+        .copied()
+        .collect())
 }
 
 fn expect_arity(inputs: &[BitSeq], expected: usize) -> Result<(), Error> {

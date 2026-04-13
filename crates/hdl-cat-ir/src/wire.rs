@@ -33,6 +33,11 @@ impl core::fmt::Display for WireId {
 /// carry only primitive bit buses, not aggregates.  Aggregates
 /// in the surface language lower to concat / slice instructions
 /// over flat wires.
+///
+/// The [`Array`](Self::Array) variant represents a fixed-depth
+/// collection of identically-typed elements (e.g. a delay line).
+/// A single [`WireId`] suffices to name the entire array, keeping
+/// the graph compact regardless of depth.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum WireTy {
     /// A single bit.
@@ -41,15 +46,56 @@ pub enum WireTy {
     Bits(u32),
     /// A two's-complement signed `n`-bit bus.
     Signed(u32),
+    /// A fixed-depth array of `element_width`-bit elements.
+    ///
+    /// Used for delay lines and shift registers.  [`width`](Self::width)
+    /// returns `element_width` (the per-element width), not the total
+    /// storage.  Use [`storage_bits`](Self::storage_bits) when the
+    /// full `element_width * depth` size is needed.
+    Array {
+        /// Bit width of each element.
+        element_width: u32,
+        /// Number of elements.
+        depth: usize,
+    },
 }
 
 impl WireTy {
-    /// The bit width of this wire.
+    /// The per-element bit width of this wire.
+    ///
+    /// For scalar types this is the bus width.  For
+    /// [`Array`](Self::Array) this is the element width, not the
+    /// total storage.
     #[must_use]
     pub fn width(&self) -> u32 {
         match self {
             Self::Bit => 1,
             Self::Bits(n) | Self::Signed(n) => *n,
+            Self::Array { element_width, .. } => *element_width,
+        }
+    }
+
+    /// The depth of an array wire, or `None` for scalar wires.
+    #[must_use]
+    pub fn depth(&self) -> Option<usize> {
+        match self {
+            Self::Bit | Self::Bits(_) | Self::Signed(_) => None,
+            Self::Array { depth, .. } => Some(*depth),
+        }
+    }
+
+    /// Total storage in bits.
+    ///
+    /// For scalar wires this equals [`width`](Self::width).  For
+    /// arrays it is `element_width * depth`.
+    #[must_use]
+    pub fn storage_bits(&self) -> usize {
+        match self {
+            Self::Bit => 1,
+            Self::Bits(n) | Self::Signed(n) => usize::try_from(*n).unwrap_or(0),
+            Self::Array { element_width, depth } => {
+                usize::try_from(*element_width).unwrap_or(0) * depth
+            }
         }
     }
 }
@@ -60,6 +106,9 @@ impl core::fmt::Display for WireTy {
             Self::Bit => f.write_str("bit"),
             Self::Bits(n) => write!(f, "Bits<{n}>"),
             Self::Signed(n) => write!(f, "SignedBits<{n}>"),
+            Self::Array { element_width, depth } => {
+                write!(f, "Array<Bits<{element_width}>, {depth}>")
+            }
         }
     }
 }
@@ -105,6 +154,10 @@ mod tests {
         assert_eq!(WireTy::Bit.width(), 1);
         assert_eq!(WireTy::Bits(8).width(), 8);
         assert_eq!(WireTy::Signed(32).width(), 32);
+        assert_eq!(
+            WireTy::Array { element_width: 64, depth: 1024 }.width(),
+            64,
+        );
     }
 
     #[test]
@@ -112,6 +165,32 @@ mod tests {
         assert_eq!(WireTy::Bit.to_string(), "bit");
         assert_eq!(WireTy::Bits(12).to_string(), "Bits<12>");
         assert_eq!(WireTy::Signed(7).to_string(), "SignedBits<7>");
+        assert_eq!(
+            WireTy::Array { element_width: 64, depth: 8 }.to_string(),
+            "Array<Bits<64>, 8>",
+        );
+    }
+
+    #[test]
+    fn wire_ty_depth() {
+        assert_eq!(WireTy::Bit.depth(), None);
+        assert_eq!(WireTy::Bits(8).depth(), None);
+        assert_eq!(WireTy::Signed(16).depth(), None);
+        assert_eq!(
+            WireTy::Array { element_width: 64, depth: 512 }.depth(),
+            Some(512),
+        );
+    }
+
+    #[test]
+    fn wire_ty_storage_bits() {
+        assert_eq!(WireTy::Bit.storage_bits(), 1);
+        assert_eq!(WireTy::Bits(8).storage_bits(), 8);
+        assert_eq!(WireTy::Signed(32).storage_bits(), 32);
+        assert_eq!(
+            WireTy::Array { element_width: 64, depth: 8 }.storage_bits(),
+            512,
+        );
     }
 
     #[test]
