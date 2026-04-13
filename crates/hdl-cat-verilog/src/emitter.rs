@@ -1307,6 +1307,101 @@ mod tests {
     }
 
     #[test]
+    fn auto_detect_array_emits_shift_register() -> Result<(), hdl_cat_error::Error> {
+        // Build a graph with one Array-typed state wire (depth 4,
+        // element_width 4) plus a scalar counter state wire.
+        // Call emit_sync_graph (not emit_sync_graph_with_arrays)
+        // and verify auto-detection produces RegArrayDecl +
+        // AlwaysArrayShift.
+        let arr_ty = WireTy::Array {
+            element_width: 4,
+            depth: 4,
+        };
+        let (bld, arr_state) = HdlGraphBuilder::new().with_wire(arr_ty.clone());
+        let (bld, ctr) = bld.with_wire(WireTy::Bits(4));
+        let (bld, data_in) = bld.with_wire(WireTy::Bits(4));
+        // Next-state wires.
+        let (bld, next_arr) = bld.with_wire(arr_ty);
+        let (bld, next_ctr) = bld.with_wire(WireTy::Bits(4));
+        // Data output: tail of the array.
+        let (bld, tail_out) = bld.with_wire(WireTy::Bits(4));
+
+        // ArrayShiftIn: next_arr = shift_in(arr_state, data_in)
+        let bld = bld.with_instruction(
+            Op::ArrayShiftIn {
+                element_width: 4,
+                depth: 4,
+            },
+            vec![arr_state, data_in],
+            next_arr,
+        )?;
+        // ArrayTail: tail_out = arr_state[depth - 1]
+        let bld = bld.with_instruction(
+            Op::ArrayTail {
+                element_width: 4,
+                depth: 4,
+            },
+            vec![arr_state],
+            tail_out,
+        )?;
+        // Counter: next_ctr = ~ctr
+        let bld = bld.with_instruction(Op::Not, vec![ctr], next_ctr)?;
+
+        let graph = bld.build();
+
+        // State wires: [arr_state, ctr] (2 state wires).
+        // Initial state: 4 bits for array element_width + 4 bits
+        // for counter = 8 bits total.
+        let init = BitSeq::from_vec(vec![false; 8]);
+        let module = emit_sync_graph(
+            &graph,
+            "auto_shift",
+            2,
+            &[arr_state, ctr, data_in],
+            &[next_arr, next_ctr, tail_out],
+            &init,
+        )
+        .run()?;
+
+        // Should have a RegArrayDecl for the array wire.
+        let arr_decl_count = module
+            .body()
+            .iter()
+            .filter(|s| matches!(s, Stmt::RegArrayDecl { .. }))
+            .count();
+        assert_eq!(arr_decl_count, 1);
+
+        // Should have one AlwaysArrayShift (depth <= 32).
+        let shift_count = module
+            .body()
+            .iter()
+            .filter(|s| matches!(s, Stmt::AlwaysArrayShift { .. }))
+            .count();
+        assert_eq!(shift_count, 1);
+
+        // Counter should still have its own AlwaysFf.
+        let ff_count = module
+            .body()
+            .iter()
+            .filter(|s| matches!(s, Stmt::AlwaysFf { .. }))
+            .count();
+        assert_eq!(ff_count, 1);
+
+        // The ArrayTail should produce an assign with an array
+        // index, not a plain wire reference.
+        let text = module.render().run()?;
+        let arr_name = format!("w{}", arr_state.index());
+        let expected_index =
+            format!("{arr_name}[3]");
+        assert!(
+            text.contains(&expected_index),
+            "expected array index {expected_index} in:\n{text}",
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn sync_emitter_handles_pure_combinational() -> Result<(), hdl_cat_error::Error> {
         // state_wire_count = 0 should produce a module with no clk/rst in body
         // (but clk/rst are still in the port list for uniformity).
