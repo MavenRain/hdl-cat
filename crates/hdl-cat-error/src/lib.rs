@@ -191,6 +191,29 @@ pub enum Error {
         /// The width of the operation that overflowed.
         width: Width,
     },
+
+    /// An IR op has no Circom lowering in the current backend version.
+    ///
+    /// The payload is a short static identifier (e.g. `"add"`,
+    /// `"reg"`) naming the op and the reason the Circom emitter
+    /// refused it.  Combinational bitwise ops, `Const`, `Slice`, and
+    /// `Concat` are supported in v1; arithmetic and stateful ops are
+    /// scheduled for a follow-up.
+    UnsupportedInCircom(&'static str),
+
+    /// A Circom signal's declared bit width exceeds the target field's
+    /// maximum safe width.
+    ///
+    /// Circom's scalar fields are prime of ~254 or ~64 bits depending
+    /// on the target curve.  An intermediate whose worst-case witness
+    /// would exceed that width cannot be emitted without lowering
+    /// through a `Num2Bits` gadget.
+    CircomWidthOverflow {
+        /// The width of the signal the emitter was asked to produce.
+        width: Width,
+        /// The target field's maximum safe bit width.
+        field_bits: Width,
+    },
 }
 
 impl core::fmt::Display for Error {
@@ -212,6 +235,13 @@ impl core::fmt::Display for Error {
                 write!(f, "simulation read before first clock edge at {cycle}")
             }
             Self::Overflow { width } => write!(f, "arithmetic overflow at {width}"),
+            Self::UnsupportedInCircom(what) => {
+                write!(f, "op not supported by the Circom backend: {what}")
+            }
+            Self::CircomWidthOverflow { width, field_bits } => write!(
+                f,
+                "Circom signal width {width} exceeds field capacity {field_bits}",
+            ),
         }
     }
 }
@@ -228,7 +258,9 @@ impl std::error::Error for Error {
             | Self::ClockDomainMismatch
             | Self::UndefinedSignal { .. }
             | Self::ImmatureSim { .. }
-            | Self::Overflow { .. } => None,
+            | Self::Overflow { .. }
+            | Self::UnsupportedInCircom(_)
+            | Self::CircomWidthOverflow { .. } => None,
         }
     }
 }
@@ -344,5 +376,26 @@ mod tests {
     #[test]
     fn signal_name_round_trips_through_accessor() {
         assert_eq!(SignalName::new("rst").as_str(), "rst");
+    }
+
+    #[test]
+    fn unsupported_in_circom_displays_reason() {
+        let e = Error::UnsupportedInCircom("add");
+        assert_eq!(
+            e.to_string(),
+            "op not supported by the Circom backend: add",
+        );
+    }
+
+    #[test]
+    fn circom_width_overflow_displays_both_widths() {
+        let e = Error::CircomWidthOverflow {
+            width: Width::new(300),
+            field_bits: Width::new(252),
+        };
+        assert_eq!(
+            e.to_string(),
+            "Circom signal width 300 bit(s) exceeds field capacity 252 bit(s)",
+        );
     }
 }
