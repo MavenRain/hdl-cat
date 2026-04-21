@@ -27,7 +27,7 @@ categories = ["hardware-support", "simulation", "science"]
 
 [workspace.dependencies]
 comp-cat-rs = "0.5"
-hdl-cat-error = { path = "crates/hdl-cat-error", version = "0.2" }
+hdl-cat-error = { path = "crates/hdl-cat-error", version = "0.3" }
 hdl-cat-bits = { path = "crates/hdl-cat-bits", version = "0.2" }
 hdl-cat-kind = { path = "crates/hdl-cat-kind", version = "0.2" }
 hdl-cat-signal = { path = "crates/hdl-cat-signal", version = "0.2" }
