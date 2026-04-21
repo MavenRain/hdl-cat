@@ -28,6 +28,12 @@ FROM=""
 SLEEP_SECONDS=15
 EXTRA_ARGS=()
 
+# Scratch log captures per-crate publish output so we can detect the
+# "already exists on crates.io" case and skip those crates without
+# failing the whole run.  Cleaned up on exit.
+PUBLISH_LOG="$(mktemp -t hdl-cat-publish.XXXXXX)"
+trap 'rm -f "$PUBLISH_LOG"' EXIT
+
 usage() {
   cat <<'USAGE'
 Usage: scripts/publish.sh [--execute] [--verify] [--from <crate>]
@@ -189,7 +195,20 @@ for crate in "${CRATES[@]}"; do
   if [[ $EXECUTE -eq 1 ]]; then
     echo "==> Publishing $crate"
     echo "    ${cmd[*]}"
-    "${cmd[@]}"
+    : > "$PUBLISH_LOG"
+    set +e
+    "${cmd[@]}" 2>&1 | tee "$PUBLISH_LOG"
+    publish_rc=${PIPESTATUS[0]}
+    set -e
+    if [[ $publish_rc -ne 0 ]]; then
+      if grep -q "already exists on crates.io" "$PUBLISH_LOG"; then
+        echo "==> $crate already at this version on crates.io; skipping"
+        echo
+        continue
+      fi
+      echo "==> $crate publish failed (exit $publish_rc); halting" >&2
+      exit "$publish_rc"
+    fi
     echo "==> $crate published; sleeping ${SLEEP_SECONDS}s for crates.io index"
     sleep "$SLEEP_SECONDS"
     echo
