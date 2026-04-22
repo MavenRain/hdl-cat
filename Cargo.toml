@@ -36,7 +36,7 @@ hdl-cat-circuit = { path = "crates/hdl-cat-circuit", version = "0.2" }
 hdl-cat-sync = { path = "crates/hdl-cat-sync", version = "0.2" }
 hdl-cat-sim = { path = "crates/hdl-cat-sim", version = "0.2" }
 hdl-cat-verilog = { path = "crates/hdl-cat-verilog", version = "0.6" }
-hdl-cat-circom = { path = "crates/hdl-cat-circom", version = "0.1" }
+hdl-cat-circom = { path = "crates/hdl-cat-circom", version = "0.2" }
 hdl-cat-std = { path = "crates/hdl-cat-std", version = "0.2" }
 hdl-cat-macros = { path = "crates/hdl-cat-macros", version = "0.2" }
 proptest = "1"

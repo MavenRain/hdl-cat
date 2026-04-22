@@ -1,13 +1,16 @@
 //! Circom AST + emitter for [`hdl_cat_ir::HdlGraph`].
 //!
-//! v1 is combinational and bit-level: every hdl-cat wire of width
-//! `N` becomes `N` Circom signals, each with a per-bit boolean
+//! Combinational and bit-level: every hdl-cat wire of width `N`
+//! becomes `N` Circom signals, each with a per-bit boolean
 //! constraint emitted on entry for input ports.  Bitwise ops
 //! (`Not`, `And`, `Or`, `Xor`, `Mux`), `Const`, `Slice`, and `Concat`
 //! lower directly to per-bit assignments.  Arithmetic (`Add`, `Sub`,
-//! `Mul`), comparisons (`Eq`, `Lt`), and stateful ops (`Reg`,
-//! `ArrayShiftIn`, `ArrayTail`) are scheduled for a follow-up and
-//! presently return [`hdl_cat_error::Error::UnsupportedInCircom`].
+//! `Mul`) lowers through circomlib's `Num2Bits` with the low `N`
+//! bits kept; comparisons (`Eq`, `Lt`) use circomlib's `IsEqual`
+//! and `LessThan`.  Stateful ops (`Reg`, `ArrayShiftIn`,
+//! `ArrayTail`) have no combinational lowering and return
+//! [`hdl_cat_error::Error::UnsupportedInCircom`]; use the Verilog
+//! backend for stateful designs.
 //!
 //! Three modules sit between the IR and the emitted Circom file:
 //!
