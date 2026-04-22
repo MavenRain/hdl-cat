@@ -21,6 +21,7 @@
 //! | Sync machines | `hdl_cat_sync` |
 //! | Simulator | `hdl_cat_sim` |
 //! | Verilog emitter | `hdl_cat_verilog` |
+//! | Circom emitter | `hdl_cat_circom` |
 //! | Standard components | `hdl_cat_std` |
 //!
 //! ## End-to-end example — stateful counter
@@ -70,8 +71,32 @@
 //! assert!(text.contains("assign"));
 //! # Ok(()) }
 //! ```
+//!
+//! ## End-to-end example — combinational Circom emission
+//!
+//! Lower a 4-bit bitwise inverter to a self-contained `circom 2.0.0`
+//! template.
+//!
+//! ```
+//! # fn main() -> Result<(), hdl_cat::Error> {
+//! use hdl_cat::circom::emit_template;
+//! use hdl_cat::ir::{HdlGraphBuilder, Op, WireTy};
+//!
+//! let (b, a) = HdlGraphBuilder::new().with_wire(WireTy::Bits(4));
+//! let (b, out) = b.with_wire(WireTy::Bits(4));
+//! let b = b.with_instruction(Op::Not, vec![a], out)?;
+//! let graph = b.build();
+//!
+//! let template = emit_template(&graph, "inv4", &[a], &[out]).run()?;
+//! let text = template.render().run()?;
+//! assert!(text.starts_with("pragma circom 2.0.0;"));
+//! assert!(text.contains("template inv4()"));
+//! assert!(text.contains("component main = inv4();"));
+//! # Ok(()) }
+//! ```
 
 pub use hdl_cat_bits as bits;
+pub use hdl_cat_circom as circom;
 pub use hdl_cat_macros::kernel;
 pub use hdl_cat_circuit as circuit;
 pub use hdl_cat_error::{Cycle, Error, SignalName, TypeName, Width};
@@ -85,7 +110,7 @@ pub use hdl_cat_verilog as verilog;
 
 /// Curated re-exports for quick imports.
 pub mod prelude {
-    pub use crate::{bits, circuit, ir, kind, sim, signal, std_lib, sync, verilog};
+    pub use crate::{bits, circom, circuit, ir, kind, sim, signal, std_lib, sync, verilog};
     pub use crate::{Cycle, Error, SignalName, TypeName, Width};
     pub use hdl_cat_bits::{Bits, SignedBits};
     pub use hdl_cat_circuit::{

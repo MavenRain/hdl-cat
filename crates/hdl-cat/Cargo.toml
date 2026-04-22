@@ -1,7 +1,7 @@
 [package]
 name = "hdl-cat"
 description = "Umbrella crate re-exporting the hdl-cat workspace"
-version = "0.5.0"
+version = "0.6.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -18,6 +18,7 @@ hdl-cat-circuit.workspace = true
 hdl-cat-sync.workspace = true
 hdl-cat-sim.workspace = true
 hdl-cat-verilog.workspace = true
+hdl-cat-circom.workspace = true
 hdl-cat-macros.workspace = true
 hdl-cat-std.workspace = true
 

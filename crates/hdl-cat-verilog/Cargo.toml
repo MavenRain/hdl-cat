@@ -1,7 +1,7 @@
 [package]
 name = "hdl-cat-verilog"
 description = "Verilog AST + emitter for hdl-cat IR graphs"
-version = "0.6.0"
+version = "0.7.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
