@@ -14,6 +14,9 @@
 //!   for mul), and the low `N` bits become the output.  Subtraction
 //!   adds a `2^N` bias so the `Num2Bits` input stays non-negative.
 //!   Emits `include "circomlib/circuits/bitify.circom";`.
+//!   At `N == 1` the emitter takes a fast path: `Add`/`Sub` reduce
+//!   to per-bit `XOR` and `Mul` reduces to per-bit `AND`, skipping
+//!   the `Bits2Num`/`Num2Bits` round-trip and the `bitify` include.
 //! - `Eq`/`Lt`: circomlib's `IsEqual`/`LessThan` gadgets.  Emits
 //!   `include "circomlib/circuits/comparators.circom";`.
 //! - `Reg`, `ArrayShiftIn`, `ArrayTail`: stateful ops with no
@@ -271,16 +274,24 @@ fn lower_bitwise(
         .first()
         .copied()
         .zip(instr.inputs().get(1).copied())
-        .map(|(a, b)| {
-            (0..width)
-                .map(|i| Stmt::Assign {
-                    lhs: wire_name(out),
-                    index: Some(i),
-                    rhs: bitwise_expr(op, a, b, i),
-                })
-                .collect()
-        })
+        .map(|(a, b)| bitwise_assigns(out, a, b, width, op))
         .unwrap_or_default()
+}
+
+fn bitwise_assigns(
+    out: WireId,
+    a: WireId,
+    b: WireId,
+    width: u32,
+    op: BitwiseOp,
+) -> Vec<Stmt> {
+    (0..width)
+        .map(|i| Stmt::Assign {
+            lhs: wire_name(out),
+            index: Some(i),
+            rhs: bitwise_expr(op, a, b, i),
+        })
+        .collect()
 }
 
 fn bitwise_expr(op: BitwiseOp, a: WireId, b: WireId, i: u32) -> Expr {
@@ -405,12 +416,20 @@ fn lower_add(instr: &Instruction, graph: &HdlGraph) -> Lowered {
     ins.first()
         .copied()
         .zip(ins.get(1).copied())
-        .map(|(a, b)| {
-            let sum = Expr::Add(
-                Box::new(bits_to_num(a, width)),
-                Box::new(bits_to_num(b, width)),
-            );
-            num2bits_wrap("add", out, width, width.saturating_add(1), sum)
+        .map(|(a, b)| match () {
+            // a + b mod 2 == a XOR b: emit a single per-bit XOR
+            // and skip the Bits2Num/Num2Bits round-trip and the
+            // bitify include.
+            () if width == 1 => {
+                Lowered::of_stmts(bitwise_assigns(out, a, b, 1, BitwiseOp::Xor))
+            }
+            () => {
+                let sum = Expr::Add(
+                    Box::new(bits_to_num(a, width)),
+                    Box::new(bits_to_num(b, width)),
+                );
+                num2bits_wrap("add", out, width, width.saturating_add(1), sum)
+            }
         })
         .unwrap_or_default()
 }
@@ -422,19 +441,26 @@ fn lower_sub(instr: &Instruction, graph: &HdlGraph) -> Lowered {
     ins.first()
         .copied()
         .zip(ins.get(1).copied())
-        .map(|(a, b)| {
-            // a - b wraps on 2^width.  Adding 2^width keeps the Num2Bits
-            // input non-negative without disturbing the low `width` bits.
-            let bias = 1u128.checked_shl(width).unwrap_or(0);
-            let diff = Expr::Sub(
-                Box::new(bits_to_num(a, width)),
-                Box::new(bits_to_num(b, width)),
-            );
-            let shifted = Expr::Add(
-                Box::new(diff),
-                Box::new(Expr::FieldLiteral(bias)),
-            );
-            num2bits_wrap("sub", out, width, width.saturating_add(1), shifted)
+        .map(|(a, b)| match () {
+            // a - b mod 2 == a + b mod 2 == a XOR b: same
+            // short-circuit as add.
+            () if width == 1 => {
+                Lowered::of_stmts(bitwise_assigns(out, a, b, 1, BitwiseOp::Xor))
+            }
+            () => {
+                // a - b wraps on 2^width.  Adding 2^width keeps the Num2Bits
+                // input non-negative without disturbing the low `width` bits.
+                let bias = 1u128.checked_shl(width).unwrap_or(0);
+                let diff = Expr::Sub(
+                    Box::new(bits_to_num(a, width)),
+                    Box::new(bits_to_num(b, width)),
+                );
+                let shifted = Expr::Add(
+                    Box::new(diff),
+                    Box::new(Expr::FieldLiteral(bias)),
+                );
+                num2bits_wrap("sub", out, width, width.saturating_add(1), shifted)
+            }
         })
         .unwrap_or_default()
 }
@@ -446,12 +472,20 @@ fn lower_mul(instr: &Instruction, graph: &HdlGraph) -> Lowered {
     ins.first()
         .copied()
         .zip(ins.get(1).copied())
-        .map(|(a, b)| {
-            let prod = Expr::Mul(
-                Box::new(bits_to_num(a, width)),
-                Box::new(bits_to_num(b, width)),
-            );
-            num2bits_wrap("mul", out, width, width.saturating_mul(2), prod)
+        .map(|(a, b)| match () {
+            // a * b mod 2 == a AND b: emit a single per-bit AND
+            // and skip the Bits2Num/Num2Bits round-trip and the
+            // bitify include.
+            () if width == 1 => {
+                Lowered::of_stmts(bitwise_assigns(out, a, b, 1, BitwiseOp::And))
+            }
+            () => {
+                let prod = Expr::Mul(
+                    Box::new(bits_to_num(a, width)),
+                    Box::new(bits_to_num(b, width)),
+                );
+                num2bits_wrap("mul", out, width, width.saturating_mul(2), prod)
+            }
         })
         .unwrap_or_default()
 }
@@ -998,6 +1032,75 @@ mod tests {
         let is_undefined =
             matches!(result, Err(hdl_cat_error::Error::UndefinedSignal { .. }));
         assert!(is_undefined);
+        Ok(())
+    }
+
+    #[test]
+    fn width_1_add_short_circuits_to_xor(
+    ) -> Result<(), hdl_cat_error::Error> {
+        let (b, a) = HdlGraphBuilder::new().with_wire(WireTy::Bits(1));
+        let (b, c) = b.with_wire(WireTy::Bits(1));
+        let (b, out) = b.with_wire(WireTy::Bits(1));
+        let b = b.with_instruction(Op::Bin(BinOp::Add), vec![a, c], out)?;
+        let graph = b.build();
+
+        let t = emit_template(&graph, "add1", &[a, c], &[out], &[]).run()?;
+        let text = t.render().run()?;
+        assert!(text.contains("w2[0] <== ((w0[0] + w1[0]) - (2 * (w0[0] * w1[0])));"));
+        assert!(!text.contains("Num2Bits"));
+        assert!(!text.contains("circomlib/circuits/bitify.circom"));
+        Ok(())
+    }
+
+    #[test]
+    fn width_1_sub_short_circuits_to_xor(
+    ) -> Result<(), hdl_cat_error::Error> {
+        let (b, a) = HdlGraphBuilder::new().with_wire(WireTy::Bits(1));
+        let (b, c) = b.with_wire(WireTy::Bits(1));
+        let (b, out) = b.with_wire(WireTy::Bits(1));
+        let b = b.with_instruction(Op::Bin(BinOp::Sub), vec![a, c], out)?;
+        let graph = b.build();
+
+        let t = emit_template(&graph, "sub1", &[a, c], &[out], &[]).run()?;
+        let text = t.render().run()?;
+        assert!(text.contains("w2[0] <== ((w0[0] + w1[0]) - (2 * (w0[0] * w1[0])));"));
+        assert!(!text.contains("Num2Bits"));
+        assert!(!text.contains("circomlib/circuits/bitify.circom"));
+        Ok(())
+    }
+
+    #[test]
+    fn width_1_mul_short_circuits_to_and(
+    ) -> Result<(), hdl_cat_error::Error> {
+        let (b, a) = HdlGraphBuilder::new().with_wire(WireTy::Bits(1));
+        let (b, c) = b.with_wire(WireTy::Bits(1));
+        let (b, out) = b.with_wire(WireTy::Bits(1));
+        let b = b.with_instruction(Op::Bin(BinOp::Mul), vec![a, c], out)?;
+        let graph = b.build();
+
+        let t = emit_template(&graph, "mul1", &[a, c], &[out], &[]).run()?;
+        let text = t.render().run()?;
+        assert!(text.contains("w2[0] <== (w0[0] * w1[0]);"));
+        assert!(!text.contains("Num2Bits"));
+        assert!(!text.contains("circomlib/circuits/bitify.circom"));
+        Ok(())
+    }
+
+    #[test]
+    fn width_2_add_still_uses_num2bits(
+    ) -> Result<(), hdl_cat_error::Error> {
+        // Sanity: the short-circuit applies only at width 1.  At width
+        // 2 the emitter must still go through Bits2Num/Num2Bits.
+        let (b, a) = HdlGraphBuilder::new().with_wire(WireTy::Bits(2));
+        let (b, c) = b.with_wire(WireTy::Bits(2));
+        let (b, out) = b.with_wire(WireTy::Bits(2));
+        let b = b.with_instruction(Op::Bin(BinOp::Add), vec![a, c], out)?;
+        let graph = b.build();
+
+        let t = emit_template(&graph, "add2", &[a, c], &[out], &[]).run()?;
+        let text = t.render().run()?;
+        assert!(text.contains("component add_w2 = Num2Bits(3);"));
+        assert!(text.contains("circomlib/circuits/bitify.circom"));
         Ok(())
     }
 }
