@@ -37,7 +37,7 @@
 //! let b = b.with_instruction(Op::Not, vec![a], out)?;
 //! let graph = b.build();
 //!
-//! let template = emit_template(&graph, "inv4", &[a], &[out]).run()?;
+//! let template = emit_template(&graph, "inv4", &[a], &[out], &[]).run()?;
 //! let text = template.render().run()?;
 //! assert!(text.starts_with("pragma circom 2.0.0;"));
 //! assert!(text.contains("template inv4()"));
@@ -45,6 +45,30 @@
 //! assert!(text.contains("signal output w1[4];"));
 //! assert!(text.contains("w1[0] <== (1 - w0[0]);"));
 //! assert!(text.contains("component main = inv4();"));
+//! # Ok(()) }
+//! ```
+//!
+//! # Example — public input declaration
+//!
+//! Pass `public_inputs` to mark one or more input wires as public on
+//! the rendered `component main` line, producing a snark-ready
+//! interface where verifiers see the named bits.
+//!
+//! ```
+//! # fn main() -> Result<(), hdl_cat_error::Error> {
+//! use hdl_cat_circom::emit_template;
+//! use hdl_cat_ir::{BinOp, HdlGraphBuilder, Op, WireTy};
+//!
+//! let (b, a) = HdlGraphBuilder::new().with_wire(WireTy::Bits(1));
+//! let (b, c) = b.with_wire(WireTy::Bits(1));
+//! let (b, out) = b.with_wire(WireTy::Bits(1));
+//! let b = b.with_instruction(Op::Bin(BinOp::And), vec![a, c], out)?;
+//! let graph = b.build();
+//!
+//! let template =
+//!     emit_template(&graph, "and1", &[a, c], &[out], &[a]).run()?;
+//! let text = template.render().run()?;
+//! assert!(text.contains("component main { public [w0] } = and1();"));
 //! # Ok(()) }
 //! ```
 

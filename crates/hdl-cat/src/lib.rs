@@ -87,7 +87,7 @@
 //! let b = b.with_instruction(Op::Not, vec![a], out)?;
 //! let graph = b.build();
 //!
-//! let template = emit_template(&graph, "inv4", &[a], &[out]).run()?;
+//! let template = emit_template(&graph, "inv4", &[a], &[out], &[]).run()?;
 //! let text = template.render().run()?;
 //! assert!(text.starts_with("pragma circom 2.0.0;"));
 //! assert!(text.contains("template inv4()"));

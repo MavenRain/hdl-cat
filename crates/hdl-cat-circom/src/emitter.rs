@@ -22,7 +22,7 @@
 //!   backend remains the authoritative target for stateful designs.
 
 use comp_cat_rs::effect::io::Io;
-use hdl_cat_error::Error;
+use hdl_cat_error::{Error, SignalName};
 use hdl_cat_ir::{BinOp, HdlGraph, Instruction, Op, WireId, WireTy};
 use hdl_cat_kind::BitSeq;
 
@@ -35,24 +35,39 @@ use crate::ast::{Expr, Field, Signal, SignalDir, Stmt, Template};
 /// ports; every other wire becomes a local `signal` intermediate.
 /// Each input port emits per-bit boolean constraints on entry.
 ///
+/// The `public_inputs` list selects which input wires are exposed
+/// as public on the rendered `component main` line.  Pass `&[]`
+/// for a fully-private interface.  Every entry must already appear
+/// in `input_wires`.
+///
 /// # Errors
 ///
-/// Returns [`Error::UnsupportedInCircom`] when a stateful op
-/// (`Reg`, `ArrayShiftIn`, `ArrayTail`) appears in the graph,
-/// since those have no combinational Circom lowering.
+/// - Returns [`Error::UnsupportedInCircom`] when a stateful op
+///   (`Reg`, `ArrayShiftIn`, `ArrayTail`) appears in the graph,
+///   since those have no combinational Circom lowering.
+/// - Returns [`Error::UndefinedSignal`] when a wire in
+///   `public_inputs` does not appear in `input_wires`.
 #[must_use]
 pub fn emit_template(
     graph: &HdlGraph,
     name: &str,
     input_wires: &[WireId],
     output_wires: &[WireId],
+    public_inputs: &[WireId],
 ) -> Io<Error, Template> {
     let graph_owned = graph.clone();
     let name_owned = name.to_string();
     let inputs_owned: Vec<WireId> = input_wires.to_vec();
     let outputs_owned: Vec<WireId> = output_wires.to_vec();
+    let publics_owned: Vec<WireId> = public_inputs.to_vec();
     Io::suspend(move || {
-        build_template(&graph_owned, &name_owned, &inputs_owned, &outputs_owned)
+        build_template(
+            &graph_owned,
+            &name_owned,
+            &inputs_owned,
+            &outputs_owned,
+            &publics_owned,
+        )
     })
 }
 
@@ -61,7 +76,24 @@ fn build_template(
     name: &str,
     inputs: &[WireId],
     outputs: &[WireId],
+    publics: &[WireId],
 ) -> Result<Template, Error> {
+    let public_names: Vec<String> = publics
+        .iter()
+        .map(|w| {
+            if inputs.contains(w) {
+                Ok(wire_name(*w))
+            } else {
+                Err(Error::UndefinedSignal {
+                    name: SignalName::new(format!(
+                        "public input {} not in input list",
+                        wire_name(*w),
+                    )),
+                })
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
     let input_ports = inputs.iter().map(|w| {
         Signal::new(wire_name(*w), SignalDir::Input, graph_width(graph, *w))
     });
@@ -117,6 +149,7 @@ fn build_template(
         ports,
         intermediates,
         body,
+        public_names,
     ))
 }
 
@@ -602,7 +635,7 @@ mod tests {
         let b = b.with_instruction(Op::Not, vec![a], out)?;
         let graph = b.build();
 
-        let t = emit_template(&graph, "inv4", &[a], &[out]).run()?;
+        let t = emit_template(&graph, "inv4", &[a], &[out], &[]).run()?;
         let text = t.render().run()?;
         assert!(text.contains("template inv4()"));
         assert!(text.contains("signal input w0[4];"));
@@ -621,7 +654,7 @@ mod tests {
         let b = b.with_instruction(Op::Bin(BinOp::Xor), vec![a, c], out)?;
         let graph = b.build();
 
-        let t = emit_template(&graph, "xor2", &[a, c], &[out]).run()?;
+        let t = emit_template(&graph, "xor2", &[a, c], &[out], &[]).run()?;
         let text = t.render().run()?;
         assert!(text.contains("w2[0] <== ((w0[0] + w1[0]) - (2 * (w0[0] * w1[0])));"));
         Ok(())
@@ -635,7 +668,7 @@ mod tests {
         let b = b.with_instruction(Op::Bin(BinOp::And), vec![a, c], out)?;
         let graph = b.build();
 
-        let t = emit_template(&graph, "and1", &[a, c], &[out]).run()?;
+        let t = emit_template(&graph, "and1", &[a, c], &[out], &[]).run()?;
         let text = t.render().run()?;
         assert!(text.contains("w2[0] <== (w0[0] * w1[0]);"));
         Ok(())
@@ -649,7 +682,7 @@ mod tests {
         let b = b.with_instruction(Op::Bin(BinOp::Or), vec![a, c], out)?;
         let graph = b.build();
 
-        let t = emit_template(&graph, "or1", &[a, c], &[out]).run()?;
+        let t = emit_template(&graph, "or1", &[a, c], &[out], &[]).run()?;
         let text = t.render().run()?;
         assert!(text.contains("w2[0] <== ((w0[0] + w1[0]) - (w0[0] * w1[0]));"));
         Ok(())
@@ -665,8 +698,14 @@ mod tests {
             b.with_instruction(Op::Mux, vec![sel, f, t_arm], out)?;
         let graph = b.build();
 
-        let tpl =
-            emit_template(&graph, "mux1", &[sel, f, t_arm], &[out]).run()?;
+        let tpl = emit_template(
+            &graph,
+            "mux1",
+            &[sel, f, t_arm],
+            &[out],
+            &[],
+        )
+        .run()?;
         let text = tpl.render().run()?;
         assert!(text.contains("w3[0] <== ((w0[0] * (w2[0] - w1[0])) + w1[0]);"));
         Ok(())
@@ -687,7 +726,7 @@ mod tests {
         )?;
         let graph = b.build();
 
-        let t = emit_template(&graph, "c4", &[], &[out]).run()?;
+        let t = emit_template(&graph, "c4", &[], &[out], &[]).run()?;
         let text = t.render().run()?;
         assert!(text.contains("w0[0] <== 1;"));
         assert!(text.contains("w0[1] <== 0;"));
@@ -708,7 +747,7 @@ mod tests {
         )?;
         let graph = b.build();
 
-        let t = emit_template(&graph, "s", &[src], &[out]).run()?;
+        let t = emit_template(&graph, "s", &[src], &[out], &[]).run()?;
         let text = t.render().run()?;
         assert!(text.contains("w1[0] <== w0[2];"));
         assert!(text.contains("w1[3] <== w0[5];"));
@@ -731,7 +770,8 @@ mod tests {
         )?;
         let graph = b.build();
 
-        let t = emit_template(&graph, "cat", &[low, high], &[out]).run()?;
+        let t =
+            emit_template(&graph, "cat", &[low, high], &[out], &[]).run()?;
         let text = t.render().run()?;
         assert!(text.contains("w2[0] <== w0[0];"));
         assert!(text.contains("w2[1] <== w0[1];"));
@@ -750,7 +790,8 @@ mod tests {
         let b = b.with_instruction(Op::Not, vec![tmp], out)?;
         let graph = b.build();
 
-        let t = emit_template(&graph, "inv_inv", &[a], &[out]).run()?;
+        let t =
+            emit_template(&graph, "inv_inv", &[a], &[out], &[]).run()?;
         let text = t.render().run()?;
         assert!(text.contains("signal w1[4];"));
         Ok(())
@@ -764,7 +805,7 @@ mod tests {
         let b = b.with_instruction(Op::Bin(BinOp::Add), vec![a, c], out)?;
         let graph = b.build();
 
-        let t = emit_template(&graph, "add4", &[a, c], &[out]).run()?;
+        let t = emit_template(&graph, "add4", &[a, c], &[out], &[]).run()?;
         let text = t.render().run()?;
         assert!(text.contains("include \"circomlib/circuits/bitify.circom\";"));
         assert!(text.contains("component add_w2 = Num2Bits(5);"));
@@ -785,7 +826,7 @@ mod tests {
         let b = b.with_instruction(Op::Bin(BinOp::Sub), vec![a, c], out)?;
         let graph = b.build();
 
-        let t = emit_template(&graph, "sub4", &[a, c], &[out]).run()?;
+        let t = emit_template(&graph, "sub4", &[a, c], &[out], &[]).run()?;
         let text = t.render().run()?;
         assert!(text.contains("component sub_w2 = Num2Bits(5);"));
         // 2^4 == 16 bias keeps the Num2Bits input non-negative.
@@ -803,7 +844,7 @@ mod tests {
         let b = b.with_instruction(Op::Bin(BinOp::Mul), vec![a, c], out)?;
         let graph = b.build();
 
-        let t = emit_template(&graph, "mul4", &[a, c], &[out]).run()?;
+        let t = emit_template(&graph, "mul4", &[a, c], &[out], &[]).run()?;
         let text = t.render().run()?;
         assert!(text.contains("component mul_w2 = Num2Bits(8);"));
         assert!(text.contains("w2[0] <== mul_w2.out[0];"));
@@ -820,7 +861,7 @@ mod tests {
         let b = b.with_instruction(Op::Bin(BinOp::Eq), vec![a, c], out)?;
         let graph = b.build();
 
-        let t = emit_template(&graph, "eq4", &[a, c], &[out]).run()?;
+        let t = emit_template(&graph, "eq4", &[a, c], &[out], &[]).run()?;
         let text = t.render().run()?;
         assert!(
             text.contains("include \"circomlib/circuits/comparators.circom\";"),
@@ -840,7 +881,7 @@ mod tests {
         let b = b.with_instruction(Op::Bin(BinOp::Lt), vec![a, c], out)?;
         let graph = b.build();
 
-        let t = emit_template(&graph, "lt4", &[a, c], &[out]).run()?;
+        let t = emit_template(&graph, "lt4", &[a, c], &[out], &[]).run()?;
         let text = t.render().run()?;
         assert!(
             text.contains("include \"circomlib/circuits/comparators.circom\";"),
@@ -862,7 +903,8 @@ mod tests {
         let b = b.with_instruction(Op::Bin(BinOp::Add), vec![tmp, a], out)?;
         let graph = b.build();
 
-        let t = emit_template(&graph, "add_twice", &[a, c], &[out]).run()?;
+        let t =
+            emit_template(&graph, "add_twice", &[a, c], &[out], &[]).run()?;
         let text = t.render().run()?;
         let bitify_hits =
             text.matches("include \"circomlib/circuits/bitify.circom\"").count();
@@ -885,12 +927,77 @@ mod tests {
         )?;
         let graph = b.build();
 
-        let result = emit_template(&graph, "r", &[a], &[out]).run();
+        let result = emit_template(&graph, "r", &[a], &[out], &[]).run();
         let is_unsupported = matches!(
             result,
             Err(hdl_cat_error::Error::UnsupportedInCircom(_))
         );
         assert!(is_unsupported);
+        Ok(())
+    }
+
+    #[test]
+    fn marks_single_public_input() -> Result<(), hdl_cat_error::Error> {
+        let (b, a) = HdlGraphBuilder::new().with_wire(WireTy::Bits(4));
+        let (b, c) = b.with_wire(WireTy::Bits(4));
+        let (b, out) = b.with_wire(WireTy::Bits(4));
+        let b = b.with_instruction(Op::Bin(BinOp::Add), vec![a, c], out)?;
+        let graph = b.build();
+
+        let t = emit_template(&graph, "add4", &[a, c], &[out], &[a]).run()?;
+        let text = t.render().run()?;
+        assert!(text.contains("component main { public [w0] } = add4();"));
+        Ok(())
+    }
+
+    #[test]
+    fn marks_multiple_public_inputs(
+    ) -> Result<(), hdl_cat_error::Error> {
+        let (b, a) = HdlGraphBuilder::new().with_wire(WireTy::Bits(4));
+        let (b, c) = b.with_wire(WireTy::Bits(4));
+        let (b, out) = b.with_wire(WireTy::Bits(4));
+        let b = b.with_instruction(Op::Bin(BinOp::Add), vec![a, c], out)?;
+        let graph = b.build();
+
+        let t =
+            emit_template(&graph, "add4", &[a, c], &[out], &[a, c]).run()?;
+        let text = t.render().run()?;
+        assert!(text.contains("component main { public [w0, w1] } = add4();"));
+        Ok(())
+    }
+
+    #[test]
+    fn empty_public_list_keeps_plain_main(
+    ) -> Result<(), hdl_cat_error::Error> {
+        let (b, a) = HdlGraphBuilder::new().with_wire(WireTy::Bits(4));
+        let (b, c) = b.with_wire(WireTy::Bits(4));
+        let (b, out) = b.with_wire(WireTy::Bits(4));
+        let b = b.with_instruction(Op::Bin(BinOp::Add), vec![a, c], out)?;
+        let graph = b.build();
+
+        let t = emit_template(&graph, "add4", &[a, c], &[out], &[]).run()?;
+        let text = t.render().run()?;
+        assert!(text.contains("component main = add4();"));
+        assert!(!text.contains("public ["));
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_public_input_not_in_input_list(
+    ) -> Result<(), hdl_cat_error::Error> {
+        let (b, a) = HdlGraphBuilder::new().with_wire(WireTy::Bits(4));
+        let (b, c) = b.with_wire(WireTy::Bits(4));
+        let (b, out) = b.with_wire(WireTy::Bits(4));
+        let b = b.with_instruction(Op::Bin(BinOp::Add), vec![a, c], out)?;
+        let graph = b.build();
+
+        // Wire `out` is an output, not an input — passing it as public
+        // must fail.
+        let result =
+            emit_template(&graph, "add4", &[a, c], &[out], &[out]).run();
+        let is_undefined =
+            matches!(result, Err(hdl_cat_error::Error::UndefinedSignal { .. }));
+        assert!(is_undefined);
         Ok(())
     }
 }

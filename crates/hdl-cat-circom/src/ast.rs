@@ -201,10 +201,17 @@ pub struct Template {
     ports: Vec<Signal>,
     intermediates: Vec<Signal>,
     body: Vec<Stmt>,
+    public_inputs: Vec<String>,
 }
 
 impl Template {
     /// Construct a new template.
+    ///
+    /// The `public_inputs` list names input signals that will be
+    /// declared as public on the `component main` instantiation.
+    /// An empty list emits a plain `component main = name();` line;
+    /// a non-empty list emits
+    /// `component main { public [a, b] } = name();`.
     pub fn new(
         field: Field,
         name: impl Into<String>,
@@ -212,6 +219,7 @@ impl Template {
         ports: Vec<Signal>,
         intermediates: Vec<Signal>,
         body: Vec<Stmt>,
+        public_inputs: Vec<String>,
     ) -> Self {
         Self {
             field,
@@ -220,6 +228,7 @@ impl Template {
             ports,
             intermediates,
             body,
+            public_inputs,
         }
     }
 
@@ -257,6 +266,15 @@ impl Template {
     #[must_use]
     pub fn body(&self) -> &[Stmt] {
         &self.body
+    }
+
+    /// The signal names declared as public on `component main`.
+    ///
+    /// An empty slice means the rendered template emits a plain
+    /// `component main = name();` line with no `public [...]` clause.
+    #[must_use]
+    pub fn public_inputs(&self) -> &[String] {
+        &self.public_inputs
     }
 
     /// Render this template to a self-contained Circom file
@@ -320,11 +338,30 @@ mod tests {
             vec![Signal::new("w0", SignalDir::Input, 4)],
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         );
         assert_eq!(t.name(), "t");
         assert_eq!(t.ports().len(), 1);
         assert_eq!(t.intermediates().len(), 0);
         assert_eq!(t.body().len(), 0);
         assert_eq!(t.field(), Field::Bn254);
+        assert!(t.public_inputs().is_empty());
+    }
+
+    #[test]
+    fn template_round_trips_public_inputs() {
+        let t = Template::new(
+            Field::Bn254,
+            "t",
+            Vec::new(),
+            vec![
+                Signal::new("w0", SignalDir::Input, 4),
+                Signal::new("w1", SignalDir::Input, 4),
+            ],
+            Vec::new(),
+            Vec::new(),
+            vec!["w0".to_string()],
+        );
+        assert_eq!(t.public_inputs(), &["w0".to_string()]);
     }
 }

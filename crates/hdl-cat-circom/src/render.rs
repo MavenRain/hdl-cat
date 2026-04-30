@@ -40,10 +40,23 @@ pub fn render_template(t: &Template) -> String {
         acc + "    " + &render_stmt(s) + "\n"
     });
     let footer = "}\n\n".to_string();
-    let main_line = format!("component main = {}();\n", t.name());
+    let main_line = render_main_line(t);
     format!(
         "{pragma}{include_lines}{separator}{header}{port_lines}{mid_sep}{intermediate_lines}{body_sep}{body_lines}{footer}{main_line}"
     )
+}
+
+fn render_main_line(t: &Template) -> String {
+    let publics = t.public_inputs();
+    if publics.is_empty() {
+        format!("component main = {}();\n", t.name())
+    } else {
+        let joined = publics.join(", ");
+        format!(
+            "component main {{ public [{joined}] }} = {}();\n",
+            t.name(),
+        )
+    }
 }
 
 fn render_signal_decl(s: &Signal) -> String {
@@ -137,6 +150,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         );
         let text = render_template(&t);
         assert!(text.starts_with("pragma circom 2.0.0;\n"));
@@ -153,6 +167,7 @@ mod tests {
             vec![Signal::new("w0", SignalDir::Input, 4)],
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         );
         let text = render_template(&t);
         assert!(text.contains("signal input w0[4];"));
@@ -165,6 +180,7 @@ mod tests {
             "t",
             Vec::new(),
             vec![Signal::new("w1", SignalDir::Output, 1)],
+            Vec::new(),
             Vec::new(),
             Vec::new(),
         );
@@ -181,6 +197,7 @@ mod tests {
             Vec::new(),
             vec![Signal::new("tmp", SignalDir::Intermediate, 8)],
             Vec::new(),
+            Vec::new(),
         );
         let text = render_template(&t);
         assert!(text.contains("signal tmp[8];"));
@@ -192,6 +209,7 @@ mod tests {
             Field::Bn254,
             "t",
             vec!["circomlib/circuits/bitify.circom".to_string()],
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -262,6 +280,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             vec![s],
+            Vec::new(),
         );
         let text = render_template(&t);
         assert!(text.contains("w1[0] <== (1 - w0[0]);"));
@@ -287,6 +306,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             vec![s],
+            Vec::new(),
         );
         let text = render_template(&t);
         assert!(text.contains("(w0[0] * (w0[0] - 1)) === 0;"));
@@ -306,6 +326,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             vec![s],
+            Vec::new(),
         );
         let text = render_template(&t);
         assert!(text.contains("component add_0 = Num2Bits(9);"));
@@ -329,9 +350,59 @@ mod tests {
             Vec::new(),
             Vec::new(),
             vec![s],
+            Vec::new(),
         );
         let text = render_template(&t);
         assert!(text.contains("add_0.in[0] <== w0[0];"));
+    }
+
+    #[test]
+    fn renders_main_with_single_public_input() {
+        let t = Template::new(
+            Field::Bn254,
+            "t",
+            Vec::new(),
+            vec![Signal::new("w0", SignalDir::Input, 4)],
+            Vec::new(),
+            Vec::new(),
+            vec!["w0".to_string()],
+        );
+        let text = render_template(&t);
+        assert!(text.contains("component main { public [w0] } = t();"));
+    }
+
+    #[test]
+    fn renders_main_with_multiple_public_inputs() {
+        let t = Template::new(
+            Field::Bn254,
+            "t",
+            Vec::new(),
+            vec![
+                Signal::new("w0", SignalDir::Input, 4),
+                Signal::new("w1", SignalDir::Input, 4),
+            ],
+            Vec::new(),
+            Vec::new(),
+            vec!["w0".to_string(), "w1".to_string()],
+        );
+        let text = render_template(&t);
+        assert!(text.contains("component main { public [w0, w1] } = t();"));
+    }
+
+    #[test]
+    fn empty_public_list_renders_plain_main() {
+        let t = Template::new(
+            Field::Bn254,
+            "t",
+            Vec::new(),
+            vec![Signal::new("w0", SignalDir::Input, 4)],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let text = render_template(&t);
+        assert!(text.contains("component main = t();"));
+        assert!(!text.contains("public ["));
     }
 
     #[test]
