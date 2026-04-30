@@ -16,6 +16,8 @@ hdl-cat-kind.workspace = true
 
 [dev-dependencies]
 hdl-cat-bits.workspace = true
+hdl-cat-sim.workspace = true
+proptest.workspace = true
 
 [lints]
 workspace = true
