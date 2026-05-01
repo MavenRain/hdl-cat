@@ -7,10 +7,13 @@
 //! lower directly to per-bit assignments.  Arithmetic (`Add`, `Sub`,
 //! `Mul`) lowers through circomlib's `Num2Bits` with the low `N`
 //! bits kept; comparisons (`Eq`, `Lt`) use circomlib's `IsEqual`
-//! and `LessThan`.  Stateful ops (`Reg`, `ArrayShiftIn`,
-//! `ArrayTail`) have no combinational lowering and return
-//! [`hdl_cat_error::Error::UnsupportedInCircom`]; use the Verilog
-//! backend for stateful designs.
+//! and `LessThan`.  Array ops (`ArrayShiftIn`, `ArrayTail`) lower
+//! to per-bit assignments on the array's flat storage.  `Reg`
+//! returns [`hdl_cat_error::Error::UnsupportedInCircom`] in the
+//! plain emitter; for `Sync<S, I, O>` machines use
+//! [`emit_unrolled_template`] to obtain a time-unrolled circom
+//! template that captures `K` cycles of the Mealy machine, with
+//! state plumbed across cycles from the machine's initial state.
 //!
 //! Three modules sit between the IR and the emitted Circom file:
 //!
@@ -77,4 +80,4 @@ pub mod emitter;
 pub mod render;
 
 pub use ast::{Expr, Field, Signal, SignalDir, Stmt, Template};
-pub use emitter::emit_template;
+pub use emitter::{emit_template, emit_unrolled_template};
