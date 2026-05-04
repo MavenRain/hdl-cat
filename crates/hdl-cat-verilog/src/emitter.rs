@@ -71,7 +71,7 @@ fn build_module(
     let assignments: Vec<Stmt> = graph
         .instructions()
         .iter()
-        .map(instruction_to_stmt)
+        .map(|instr| instruction_to_stmt(graph, instr))
         .collect();
 
     let body = internal_decls.into_iter().chain(assignments).collect();
@@ -89,14 +89,14 @@ fn wire_name(w: WireId) -> String {
     format!("w{}", w.index())
 }
 
-fn instruction_to_stmt(instr: &Instruction) -> Stmt {
+fn instruction_to_stmt(graph: &HdlGraph, instr: &Instruction) -> Stmt {
     Stmt::Assign {
         lhs: wire_name(instr.output()),
-        rhs: op_to_expr(instr.op(), instr.inputs()),
+        rhs: op_to_expr(graph, instr.op(), instr.inputs()),
     }
 }
 
-fn op_to_expr(op: &Op, inputs: &[WireId]) -> Expr {
+fn op_to_expr(graph: &HdlGraph, op: &Op, inputs: &[WireId]) -> Expr {
     match op {
         Op::Not => Expr::Not(Box::new(wire_expr(inputs[0]))),
         Op::Bin(b) => Expr::Binary {
@@ -124,11 +124,22 @@ fn op_to_expr(op: &Op, inputs: &[WireId]) -> Expr {
             high: Box::new(wire_expr(inputs[1])),
             low: Box::new(wire_expr(inputs[0])),
         },
-        Op::Slice { lo, hi } => Expr::Slice {
-            source: Box::new(wire_expr(inputs[0])),
-            lo: *lo,
-            hi: *hi,
-        },
+        Op::Slice { lo, hi } => {
+            // Scalar wires (width <= 1) are declared without a packed
+            // range, so a no-op `[0:0]` part-select on them is invalid
+            // Verilog.  Collapse the slice to the source identifier
+            // when it covers the entire (1-bit) source.
+            let source_width = graph.wire_ty(inputs[0].index()).map_or(0, WireTy::width);
+            if source_width <= 1 && *lo == 0 && *hi == source_width {
+                wire_expr(inputs[0])
+            } else {
+                Expr::Slice {
+                    source: Box::new(wire_expr(inputs[0])),
+                    lo: *lo,
+                    hi: *hi,
+                }
+            }
+        }
         Op::ArrayShiftIn { .. } | Op::ArrayTail { .. } => {
             // Array ops are handled at the module level by the
             // sync emitter (RegArrayDecl + AlwaysArrayShift /
@@ -491,7 +502,7 @@ fn build_sync_module_with_arrays(
         .instructions()
         .iter()
         .filter(|instr| !array_next_skip.contains(&instr.output()))
-        .map(instruction_to_stmt)
+        .map(|instr| instruction_to_stmt(graph, instr))
         .collect();
 
     // Individual always_ff blocks for non-array state wires.
@@ -937,7 +948,7 @@ fn build_sync_module(
             !suppressed_next.contains(&instr.output())
                 && !arr_tail_outputs.contains(&instr.output())
         })
-        .map(instruction_to_stmt)
+        .map(|instr| instruction_to_stmt(graph, instr))
         .collect();
 
     // Scalar always_ff blocks.
@@ -1417,6 +1428,35 @@ mod tests {
             .filter(|s| matches!(s, Stmt::AlwaysFf { .. }))
             .count();
         assert_eq!(always_count, 0);
+        Ok(())
+    }
+
+    /// Regression: a no-op `Op::Slice { lo: 0, hi: 1 }` on a 1-bit
+    /// (scalar) source must not emit `name[0:0]`, since Verilog
+    /// rejects bit-selects on scalar wires.  The emitter should
+    /// collapse the slice to a plain wire reference.
+    #[test]
+    fn slice_on_scalar_emits_plain_wire() -> Result<(), hdl_cat_error::Error> {
+        let (bld, a) = HdlGraphBuilder::new().with_wire(WireTy::Bit);
+        let (bld, out) = bld.with_wire(WireTy::Bit);
+        let bld = bld.with_instruction(Op::Slice { lo: 0, hi: 1 }, vec![a], out)?;
+        let graph = bld.build();
+
+        let module = emit_graph(&graph, "id1", &[a], &[out]).run()?;
+        let text = module.render().run()?;
+
+        // The 1-bit input port must be declared as a scalar.
+        assert!(text.contains("input a") || text.contains("input w0"));
+        // No `[0:0]` part-select on any scalar source.
+        assert!(
+            !text.contains("[0:0]"),
+            "scalar bit-select leaked into emitted Verilog:\n{text}"
+        );
+        // The slice must collapse to a direct wire reference.
+        assert!(
+            text.contains("assign w1 = w0;"),
+            "expected `assign w1 = w0;` in emitted Verilog:\n{text}"
+        );
         Ok(())
     }
 }
